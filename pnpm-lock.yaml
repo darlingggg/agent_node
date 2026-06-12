@@ -1,0 +1,299 @@
+---
+lockfileVersion: '9.0'
+
+importers:
+
+  .:
+    configDependencies: {}
+    packageManagerDependencies:
+      '@pnpm/exe':
+        specifier: ^11.5.2
+        version: 11.6.0
+      pnpm:
+        specifier: ^11.5.2
+        version: 11.6.0
+
+packages:
+
+  '@pnpm/exe@11.6.0':
+    resolution: {integrity: sha512-CguaA9vPwP8IMpgbGp2Pbhek7GxvAWvm7orXaguA5Hr07BVvCiQqH5O0FbLwMdTBos0wb8AvsTHlZrLGehkQHw==, tarball: https://registry.npmmirror.com/@pnpm/exe/-/exe-11.6.0.tgz}
+    hasBin: true
+
+  '@pnpm/linux-arm64@11.6.0':
+    resolution: {integrity: sha512-NaGjtSDjXt1xI0i7oZgOZREEpWVf4+1jtNVUoCKwp0kTm10S5kd98IHoaHtlYCQ+sHRTezFsNq4ex42lbq2Nug==, tarball: https://registry.npmmirror.com/@pnpm/linux-arm64/-/linux-arm64-11.6.0.tgz}
+    cpu: [arm64]
+    os: [linux]
+
+  '@pnpm/linux-x64@11.6.0':
+    resolution: {integrity: sha512-9KUcSliUBxaLz/9Zvulnb3gy6K1UW86uuVHA65yX36I2Bqs151E+roMfVlLJqhfK+p+GP5xaUpLdNbmDj/bskg==, tarball: https://registry.npmmirror.com/@pnpm/linux-x64/-/linux-x64-11.6.0.tgz}
+    cpu: [x64]
+    os: [linux]
+
+  '@pnpm/linuxstatic-arm64@11.6.0':
+    resolution: {integrity: sha512-iqGJk/3v/Thrr/7ngDMK7knmjdkG162zz3cnvkeYqj/bvnpQU6LrfCBLjncaSUbEuekpnDj7Y7Ob1dtWpGp+lA==, tarball: https://registry.npmmirror.com/@pnpm/linuxstatic-arm64/-/linuxstatic-arm64-11.6.0.tgz}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@pnpm/linuxstatic-x64@11.6.0':
+    resolution: {integrity: sha512-R+aKPOmTrXym7hcpmsQMPj8BgqWTkQyMbLMhozKWal3vQ/AaN7JlIzuL8ZG+1kn+o+7cQ6woG6esK54ZCFtfPg==, tarball: https://registry.npmmirror.com/@pnpm/linuxstatic-x64/-/linuxstatic-x64-11.6.0.tgz}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@pnpm/macos-arm64@11.6.0':
+    resolution: {integrity: sha512-vN9NjAn0rC9qIwnSkEY6Ep330HvZGP0umR/VYcH2xNcKzTclhlLVngXfAl70pxDu2VqcHo6+n/XVp7PwLG6JuA==, tarball: https://registry.npmmirror.com/@pnpm/macos-arm64/-/macos-arm64-11.6.0.tgz}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@pnpm/win-arm64@11.6.0':
+    resolution: {integrity: sha512-ubXglpUji9C3AEWMBsadgDvMF1hKRuO8kg/UjY4RDWO/omMVR0gt87B7guLGnuWYOZOyBgqvE6SdnP84w1wMyA==, tarball: https://registry.npmmirror.com/@pnpm/win-arm64/-/win-arm64-11.6.0.tgz}
+    cpu: [arm64]
+    os: [win32]
+
+  '@reflink/reflink-darwin-arm64@0.1.19':
+    resolution: {integrity: sha512-ruy44Lpepdk1FqDz38vExBY/PVUsjxZA+chd9wozjUH9JjuDT/HEaQYA6wYN9mf041l0yLVar6BCZuWABJvHSA==, tarball: https://registry.npmmirror.com/@reflink/reflink-darwin-arm64/-/reflink-darwin-arm64-0.1.19.tgz}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [darwin]
+
+  '@reflink/reflink-darwin-x64@0.1.19':
+    resolution: {integrity: sha512-By85MSWrMZa+c26TcnAy8SDk0sTUkYlNnwknSchkhHpGXOtjNDUOxJE9oByBnGbeuIE1PiQsxDG3Ud+IVV9yuA==, tarball: https://registry.npmmirror.com/@reflink/reflink-darwin-x64/-/reflink-darwin-x64-0.1.19.tgz}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [darwin]
+
+  '@reflink/reflink-linux-arm64-gnu@0.1.19':
+    resolution: {integrity: sha512-7P+er8+rP9iNeN+bfmccM4hTAaLP6PQJPKWSA4iSk2bNvo6KU6RyPgYeHxXmzNKzPVRcypZQTpFgstHam6maVg==, tarball: https://registry.npmmirror.com/@reflink/reflink-linux-arm64-gnu/-/reflink-linux-arm64-gnu-0.1.19.tgz}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [glibc]
+
+  '@reflink/reflink-linux-arm64-musl@0.1.19':
+    resolution: {integrity: sha512-37iO/Dp6m5DDaC2sf3zPtx/hl9FV3Xze4xoYidrxxS9bgP3S8ALroxRK6xBG/1TtfXKTvolvp+IjrUU6ujIGmA==, tarball: https://registry.npmmirror.com/@reflink/reflink-linux-arm64-musl/-/reflink-linux-arm64-musl-0.1.19.tgz}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [linux]
+    libc: [musl]
+
+  '@reflink/reflink-linux-x64-gnu@0.1.19':
+    resolution: {integrity: sha512-jbI8jvuYCaA3MVUdu8vLoLAFqC+iNMpiSuLbxlAgg7x3K5bsS8nOpTRnkLF7vISJ+rVR8W+7ThXlXlUQ93ulkw==, tarball: https://registry.npmmirror.com/@reflink/reflink-linux-x64-gnu/-/reflink-linux-x64-gnu-0.1.19.tgz}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [linux]
+    libc: [glibc]
+
+  '@reflink/reflink-linux-x64-musl@0.1.19':
+    resolution: {integrity: sha512-e9FBWDe+lv7QKAwtKOt6A2W/fyy/aEEfr0g6j/hWzvQcrzHCsz07BNQYlNOjTfeytrtLU7k449H1PI95jA4OjQ==, tarball: https://registry.npmmirror.com/@reflink/reflink-linux-x64-musl/-/reflink-linux-x64-musl-0.1.19.tgz}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [linux]
+    libc: [musl]
+
+  '@reflink/reflink-win32-arm64-msvc@0.1.19':
+    resolution: {integrity: sha512-09PxnVIQcd+UOn4WAW73WU6PXL7DwGS6wPlkMhMg2zlHHG65F3vHepOw06HFCq+N42qkaNAc8AKIabWvtk6cIQ==, tarball: https://registry.npmmirror.com/@reflink/reflink-win32-arm64-msvc/-/reflink-win32-arm64-msvc-0.1.19.tgz}
+    engines: {node: '>= 10'}
+    cpu: [arm64]
+    os: [win32]
+
+  '@reflink/reflink-win32-x64-msvc@0.1.19':
+    resolution: {integrity: sha512-E//yT4ni2SyhwP8JRjVGWr3cbnhWDiPLgnQ66qqaanjjnMiu3O/2tjCPQXlcGc/DEYofpDc9fvhv6tALQsMV9w==, tarball: https://registry.npmmirror.com/@reflink/reflink-win32-x64-msvc/-/reflink-win32-x64-msvc-0.1.19.tgz}
+    engines: {node: '>= 10'}
+    cpu: [x64]
+    os: [win32]
+
+  '@reflink/reflink@0.1.19':
+    resolution: {integrity: sha512-DmCG8GzysnCZ15bres3N5AHCmwBwYgp0As6xjhQ47rAUTUXxJiK+lLUxaGsX3hd/30qUpVElh05PbGuxRPgJwA==, tarball: https://registry.npmmirror.com/@reflink/reflink/-/reflink-0.1.19.tgz}
+    engines: {node: '>= 10'}
+
+  detect-libc@2.1.2:
+    resolution: {integrity: sha512-Btj2BOOO83o3WyH59e8MgXsxEQVcarkUOpEYrubB0urwnN10yQ364rsiByU11nZlqWYZm05i/of7io4mzihBtQ==, tarball: https://registry.npmmirror.com/detect-libc/-/detect-libc-2.1.2.tgz}
+    engines: {node: '>=8'}
+
+  pnpm@11.6.0:
+    resolution: {integrity: sha512-mjZRgiQIDG/lFlr9z+eb+hGMKb5wPz9GKx4y7+HpjkfodQsUjggoYlCq1BE8x5k8pBPE4s1Ed1JwjC7ldRvJXw==, tarball: https://registry.npmmirror.com/pnpm/-/pnpm-11.6.0.tgz}
+    engines: {node: '>=22.13'}
+    hasBin: true
+
+snapshots:
+
+  '@pnpm/exe@11.6.0':
+    dependencies:
+      '@reflink/reflink': 0.1.19
+      detect-libc: 2.1.2
+    optionalDependencies:
+      '@pnpm/linux-arm64': 11.6.0
+      '@pnpm/linux-x64': 11.6.0
+      '@pnpm/linuxstatic-arm64': 11.6.0
+      '@pnpm/linuxstatic-x64': 11.6.0
+      '@pnpm/macos-arm64': 11.6.0
+      '@pnpm/win-arm64': 11.6.0
+
+  '@pnpm/linux-arm64@11.6.0':
+    optional: true
+
+  '@pnpm/linux-x64@11.6.0':
+    optional: true
+
+  '@pnpm/linuxstatic-arm64@11.6.0':
+    optional: true
+
+  '@pnpm/linuxstatic-x64@11.6.0':
+    optional: true
+
+  '@pnpm/macos-arm64@11.6.0':
+    optional: true
+
+  '@pnpm/win-arm64@11.6.0':
+    optional: true
+
+  '@reflink/reflink-darwin-arm64@0.1.19':
+    optional: true
+
+  '@reflink/reflink-darwin-x64@0.1.19':
+    optional: true
+
+  '@reflink/reflink-linux-arm64-gnu@0.1.19':
+    optional: true
+
+  '@reflink/reflink-linux-arm64-musl@0.1.19':
+    optional: true
+
+  '@reflink/reflink-linux-x64-gnu@0.1.19':
+    optional: true
+
+  '@reflink/reflink-linux-x64-musl@0.1.19':
+    optional: true
+
+  '@reflink/reflink-win32-arm64-msvc@0.1.19':
+    optional: true
+
+  '@reflink/reflink-win32-x64-msvc@0.1.19':
+    optional: true
+
+  '@reflink/reflink@0.1.19':
+    optionalDependencies:
+      '@reflink/reflink-darwin-arm64': 0.1.19
+      '@reflink/reflink-darwin-x64': 0.1.19
+      '@reflink/reflink-linux-arm64-gnu': 0.1.19
+      '@reflink/reflink-linux-arm64-musl': 0.1.19
+      '@reflink/reflink-linux-x64-gnu': 0.1.19
+      '@reflink/reflink-linux-x64-musl': 0.1.19
+      '@reflink/reflink-win32-arm64-msvc': 0.1.19
+      '@reflink/reflink-win32-x64-msvc': 0.1.19
+
+  detect-libc@2.1.2: {}
+
+  pnpm@11.6.0: {}
+
+---
+lockfileVersion: '9.0'
+
+settings:
+  autoInstallPeers: true
+  excludeLinksFromLockfile: false
+
+importers:
+
+  .:
+    dependencies:
+      mysql2:
+        specifier: ^3.22.5
+        version: 3.22.5(@types/node@25.9.3)
+
+packages:
+
+  '@types/node@25.9.3':
+    resolution: {integrity: sha512-603BddQMv3pUcr4U2dhujk83N2tTDVr/34wII2B6bJy6g+8WD6yUb11jszNs0gdi4PesVWl7ABt8nYMVpnLUcg==, tarball: https://registry.npmmirror.com/@types/node/-/node-25.9.3.tgz}
+
+  aws-ssl-profiles@1.1.2:
+    resolution: {integrity: sha512-NZKeq9AfyQvEeNlN0zSYAaWrmBffJh3IELMZfRpJVWgrpEbtEpnjvzqBPf+mxoI287JohRDoa+/nsfqqiZmF6g==, tarball: https://registry.npmmirror.com/aws-ssl-profiles/-/aws-ssl-profiles-1.1.2.tgz}
+    engines: {node: '>= 6.0.0'}
+
+  denque@2.1.0:
+    resolution: {integrity: sha512-HVQE3AAb/pxF8fQAoiqpvg9i3evqug3hoiwakOyZAwJm+6vZehbkYXZ0l4JxS+I3QxM97v5aaRNhj8v5oBhekw==, tarball: https://registry.npmmirror.com/denque/-/denque-2.1.0.tgz}
+    engines: {node: '>=0.10'}
+
+  generate-function@2.3.1:
+    resolution: {integrity: sha512-eeB5GfMNeevm/GRYq20ShmsaGcmI81kIX2K9XQx5miC8KdHaC6Jm0qQ8ZNeGOi7wYB8OsdxKs+Y2oVuTFuVwKQ==, tarball: https://registry.npmmirror.com/generate-function/-/generate-function-2.3.1.tgz}
+
+  iconv-lite@0.7.2:
+    resolution: {integrity: sha512-im9DjEDQ55s9fL4EYzOAv0yMqmMBSZp6G0VvFyTMPKWxiSBHUj9NW/qqLmXUwXrrM7AvqSlTCfvqRb0cM8yYqw==, tarball: https://registry.npmmirror.com/iconv-lite/-/iconv-lite-0.7.2.tgz}
+    engines: {node: '>=0.10.0'}
+
+  is-property@1.0.2:
+    resolution: {integrity: sha512-Ks/IoX00TtClbGQr4TWXemAnktAQvYB7HzcCxDGqEZU6oCmb2INHuOoKxbtR+HFkmYWBKv/dOZtGRiAjDhj92g==, tarball: https://registry.npmmirror.com/is-property/-/is-property-1.0.2.tgz}
+
+  long@5.3.2:
+    resolution: {integrity: sha512-mNAgZ1GmyNhD7AuqnTG3/VQ26o760+ZYBPKjPvugO8+nLbYfX6TVpJPseBvopbdY+qpZ/lKUnmEc1LeZYS3QAA==, tarball: https://registry.npmmirror.com/long/-/long-5.3.2.tgz}
+
+  lru.min@1.1.4:
+    resolution: {integrity: sha512-DqC6n3QQ77zdFpCMASA1a3Jlb64Hv2N2DciFGkO/4L9+q/IpIAuRlKOvCXabtRW6cQf8usbmM6BE/TOPysCdIA==, tarball: https://registry.npmmirror.com/lru.min/-/lru.min-1.1.4.tgz}
+    engines: {bun: '>=1.0.0', deno: '>=1.30.0', node: '>=8.0.0'}
+
+  mysql2@3.22.5:
+    resolution: {integrity: sha512-95uZ2TrPWAZdwpB3vvvDbmEMcNG8yIeNCyu6GUcr/QnWEE/wXm7+mhOCsdQfWQDTV7qYT/PDUZ4U4UPP4AsXqQ==, tarball: https://registry.npmmirror.com/mysql2/-/mysql2-3.22.5.tgz}
+    engines: {node: '>= 8.0'}
+    peerDependencies:
+      '@types/node': '>= 8'
+
+  named-placeholders@1.1.6:
+    resolution: {integrity: sha512-Tz09sEL2EEuv5fFowm419c1+a/jSMiBjI9gHxVLrVdbUkkNUUfjsVYs9pVZu5oCon/kmRh9TfLEObFtkVxmY0w==, tarball: https://registry.npmmirror.com/named-placeholders/-/named-placeholders-1.1.6.tgz}
+    engines: {node: '>=8.0.0'}
+
+  safer-buffer@2.1.2:
+    resolution: {integrity: sha512-YZo3K82SD7Riyi0E1EQPojLz7kpepnSQI9IyPbHHg1XXXevb5dJI7tpyN2ADxGcQbHG7vcyRHk0cbwqcQriUtg==, tarball: https://registry.npmmirror.com/safer-buffer/-/safer-buffer-2.1.2.tgz}
+
+  sql-escaper@1.3.3:
+    resolution: {integrity: sha512-BsTCV265VpTp8tm1wyIm1xqQCS+Q9NHx2Sr+WcnUrgLrQ6yiDIvHYJV5gHxsj1lMBy2zm5twLaZao8Jd+S8JJw==, tarball: https://registry.npmmirror.com/sql-escaper/-/sql-escaper-1.3.3.tgz}
+    engines: {bun: '>=1.0.0', deno: '>=2.0.0', node: '>=12.0.0'}
+
+  undici-types@7.24.6:
+    resolution: {integrity: sha512-WRNW+sJgj5OBN4/0JpHFqtqzhpbnV0GuB+OozA9gCL7a993SmU+1JBZCzLNxYsbMfIeDL+lTsphD5jN5N+n0zg==, tarball: https://registry.npmmirror.com/undici-types/-/undici-types-7.24.6.tgz}
+
+snapshots:
+
+  '@types/node@25.9.3':
+    dependencies:
+      undici-types: 7.24.6
+
+  aws-ssl-profiles@1.1.2: {}
+
+  denque@2.1.0: {}
+
+  generate-function@2.3.1:
+    dependencies:
+      is-property: 1.0.2
+
+  iconv-lite@0.7.2:
+    dependencies:
+      safer-buffer: 2.1.2
+
+  is-property@1.0.2: {}
+
+  long@5.3.2: {}
+
+  lru.min@1.1.4: {}
+
+  mysql2@3.22.5(@types/node@25.9.3):
+    dependencies:
+      '@types/node': 25.9.3
+      aws-ssl-profiles: 1.1.2
+      denque: 2.1.0
+      generate-function: 2.3.1
+      iconv-lite: 0.7.2
+      long: 5.3.2
+      lru.min: 1.1.4
+      named-placeholders: 1.1.6
+      sql-escaper: 1.3.3
+
+  named-placeholders@1.1.6:
+    dependencies:
+      lru.min: 1.1.4
+
+  safer-buffer@2.1.2: {}
+
+  sql-escaper@1.3.3: {}
+
+  undici-types@7.24.6: {}
