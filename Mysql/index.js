@@ -1,11 +1,14 @@
 import mysql from 'mysql2/promise';
+
+/**
+ * 创建 MySQL 数据库连接
+ */
 const connection = await mysql.createConnection({
   host: 'localhost',
   port: 3306,
   user: 'root',
-  password: '123456',          // 本机 root 目前是空密码
+  password: '123456',
   database: 'gameAgent'
 });
-const [rows] = await connection.query('SELECT * FROM users');
-console.log(rows);
-connection.end();
+
+export default connection;

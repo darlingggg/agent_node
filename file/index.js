@@ -1,0 +1,223 @@
+import fs from 'fs/promises';
+import path from 'path';
+
+/** 默认项目根目录 */
+export const PROJECT_TEMP_ROOT = 'C:\\pro_self\\projectTemp';
+
+/** 需要跳过的目录名 */
+const IGNORED_DIRS = new Set([
+  'node_modules',
+  '.git',
+  'dist',
+  'dist-ssr',
+  'coverage',
+  '.idea',
+  'logs',
+  '__screenshots__',
+  '.vscode',
+]);
+
+/** 需要跳过的文件名 */
+const IGNORED_FILES = new Set([
+  '.DS_Store',
+  'Thumbs.db',
+  'pnpm-lock.yaml',
+  'package-lock.json',
+  'yarn.lock',
+  '.eslintcache',
+  '.gitignore',
+  '.npmrc',
+  'README.md',
+]);
+
+/** 需要跳过的文件后缀 */
+const IGNORED_EXTENSIONS = new Set([
+  '.log',
+  '.local',
+  '.suo',
+  '.tsbuildinfo',
+]);
+
+/**
+ * 判断文件是否应被过滤
+ * @param {string} fileName 文件名
+ * @returns {boolean}
+ */
+function shouldSkipFile(fileName) {
+  if (IGNORED_FILES.has(fileName)) {
+    return true;
+  }
+  return IGNORED_EXTENSIONS.has(path.extname(fileName).toLowerCase());
+}
+
+/**
+ * 清理路径字符串
+ * @param {string} rawPath 原始路径
+ * @returns {string}
+ */
+function cleanPath(rawPath) {
+  let cleaned = String(rawPath).trim();
+
+  try {
+    cleaned = decodeURIComponent(cleaned);
+  } catch {
+  }
+
+  cleaned = cleaned.replace(/[\u200B-\u200F\u202A-\u202E\uFEFF]/g, '');
+  return path.normalize(cleaned);
+}
+
+/**
+ * 解析项目根目录
+ * @param {string} [dir] 项目根目录，默认 PROJECT_TEMP_ROOT
+ * @returns {string}
+ */
+function resolveRootDir(dir) {
+  if (!dir) {
+    return PROJECT_TEMP_ROOT;
+  }
+
+  const cleaned = cleanPath(dir);
+  return path.isAbsolute(cleaned)
+    ? cleaned
+    : path.resolve(PROJECT_TEMP_ROOT, cleaned);
+}
+
+/**
+ * 基于根目录解析目标路径
+ * @param {string} targetPath 目标路径
+ * @param {string} rootDir 项目根目录
+ * @returns {string}
+ */
+function resolveTargetPath(targetPath, rootDir) {
+  if (!targetPath) {
+    return rootDir;
+  }
+
+  const cleaned = cleanPath(targetPath);
+  return path.isAbsolute(cleaned)
+    ? cleaned
+    : path.resolve(rootDir, cleaned);
+}
+
+/**
+ * 校验路径是否在指定根目录内
+ * @param {string} fullPath 绝对路径
+ * @param {string} rootDir 项目根目录
+ */
+function assertWithinRoot(fullPath, rootDir) {
+  const relative = path.relative(rootDir, fullPath);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('不允许访问项目目录外的路径');
+  }
+}
+
+/**
+ * 判断路径是否在 src 目录下
+ * @param {string} fullPath 绝对路径
+ * @param {string} rootDir 项目根目录
+ * @returns {boolean}
+ */
+function isUnderSrc(fullPath, rootDir) {
+  const relative = path.relative(rootDir, fullPath);
+  return relative === 'src' || relative.startsWith(`src${path.sep}`);
+}
+
+/**
+ * 获取指定目录下的所有文件
+ * @param {string} dir 项目根目录
+ * @returns {Promise<Array<{path: string, name: string, relativePath: string}>>}
+ */
+export async function getProjectTempFiles(dir) {
+  const files = [];
+  async function walk(currentDir) {
+    const entries = await fs.readdir(currentDir, { withFileTypes: true });
+
+    for (const entry of entries) {
+      if (entry.isDirectory() && IGNORED_DIRS.has(entry.name)) {
+        continue;
+      }
+
+      const fullPath = path.join(currentDir, entry.name);
+
+      if (entry.isDirectory()) {
+        await walk(fullPath);
+      } else if (entry.isFile() && !shouldSkipFile(entry.name)) {
+        files.push({
+          path: fullPath,
+          name: entry.name,
+          relativePath: path.relative(dir, fullPath),
+        });
+      }
+    }
+  }
+
+  await walk(dir);
+  return files;
+}
+
+/**
+ * 获取文件内容
+ * @param {string} filePath 文件路径
+ * @param {string} [dir] 项目根目录，默认 PROJECT_TEMP_ROOT
+ * @returns {Promise<string>}
+ */
+export async function getFileContent(filePath, dir) {
+  const rootDir = resolveRootDir(dir);
+  const fullPath = resolveTargetPath(filePath, rootDir);
+  assertWithinRoot(fullPath, rootDir);
+  return fs.readFile(fullPath, 'utf-8');
+}
+
+/**
+ * 写入文件内容，文件已存在则覆盖
+ * src 目录下支持自动创建父目录，其他目录仅允许在已有目录中创建文件
+ * @param {string} filePath 文件路径
+ * @param {string} content 文件内容
+ * @param {string} [dir] 项目根目录，默认 PROJECT_TEMP_ROOT
+ * @returns {Promise<{path: string, relativePath: string, dir: string}>}
+ */
+export async function writeFileContent(filePath, content = '', dir) {
+  const rootDir = resolveRootDir(dir);
+  const fullPath = resolveTargetPath(filePath, rootDir);
+  assertWithinRoot(fullPath, rootDir);
+
+  try {
+    const stat = await fs.stat(fullPath);
+    if (stat.isDirectory()) {
+      throw new Error('目标路径是目录，无法写入文件');
+    }
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      throw err;
+    }
+  }
+
+  const parentDir = path.dirname(fullPath);
+  let parentExists = false;
+
+  try {
+    const parentStat = await fs.stat(parentDir);
+    parentExists = parentStat.isDirectory();
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      throw err;
+    }
+  }
+
+  if (!parentExists) {
+    if (isUnderSrc(fullPath, rootDir)) {
+      await fs.mkdir(parentDir, { recursive: true });
+    } else {
+      throw new Error('父目录不存在，仅 src 目录下支持自动创建目录');
+    }
+  }
+
+  await fs.writeFile(fullPath, content, 'utf-8');
+
+  return {
+    dir: rootDir,
+    path: fullPath,
+    relativePath: path.relative(rootDir, fullPath),
+  };
+}
