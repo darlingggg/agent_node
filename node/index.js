@@ -2,7 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import connection from '../Mysql/index.js';
 import resCC from './middleware/resCC.js';
-import { getProjectTempFiles, getFileContent, writeFileContent } from '../file/index.js';
+import authJWT from './middleware/authJWT.js';
+import { register, login } from './auth/index.js';
+import { getProjectTempFiles, getFileContent, writeFileContent, copyDir } from './file/index.js';
+import { createProject, getProjectList, deleteProject,updateProject } from './project/index.js';
 
 /** 默认服务端口 */
 const PORT = 3000;
@@ -16,7 +19,7 @@ app.set('etag', false);
 // 开启跨域支持，允许所有来源（开发环境）
 app.use(cors({
   origin: '*',
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS','PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
@@ -32,15 +35,43 @@ app.get('/', (req, res) => {
   res.cc(0, 'Express 服务运行正常');
 });
 
-/** 查询用户列表 */
-app.get('/users', async (req, res) => {
+/** 用户注册 */
+app.post('/register', async (req, res) => {
   try {
-    const [rows] = await connection.query('SELECT * FROM users');
-    res.cc(0, '获取成功', rows);
+    const { account, password, nickname } = req.body;
+    const result = await register(account, password, nickname);
+    res.cc(0, '注册成功', result);
   } catch (err) {
     res.cc(1, err.message);
   }
 });
+
+/** 用户登录 */
+app.post('/login', async (req, res) => {
+  try {
+    const { account, password } = req.body;
+    const result = await login(account, password);
+    res.cc(0, '登录成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 获取当前登录用户信息 */
+app.get('/user/profile', authJWT, (req, res) => {
+  res.cc(0, '获取成功', req.user);
+});
+
+/** 拷贝文件夹到指定目录 */
+app.post('/file/copy', async (req, res) => {
+  try {
+    const { sourceDir, targetDir } = req.body;
+    const result = await copyDir(sourceDir, targetDir);
+    res.cc(0, '拷贝成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
 
 /** 获取文件目录，dir 为项目根目录 */
 app.get('/files', async (req, res) => {
@@ -78,6 +109,52 @@ app.post('/file/write', async (req, res) => {
     }
     const result = await writeFileContent(filePath, content, dir);
     res.cc(0, '写入成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 创建项目 */
+app.post('/project/create',authJWT, async (req, res) => {
+  const body = req.body;
+  if(!body.title) res.cc(1, '标题不能为空');
+  try {
+    const result = await createProject(req.user, body);
+    res.cc(0, '创建成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 获取项目列表 */
+app.get('/project/list',authJWT, async (req, res) => {
+  try {
+    const result = await getProjectList(req.user);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 删除项目 */
+app.post('/project/delete',authJWT, async (req, res) => {
+  if(!req.body.id) res.cc(1, 'id 不能为空');
+  try {
+    const result = await deleteProject(req.body.id, req.user);
+    res.cc(0, '删除成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 修改项目配置 */
+app.patch('/project/update',authJWT, async (req, res) => {
+  const body = req.body;
+  if(!body.id) res.cc(1, 'id 不能为空');
+  if(!body.title) res.cc(1, '标题不能为空');
+  try {
+    const result = await updateProject(body, req.user);
+    res.cc(0, '修改成功', result);
   } catch (err) {
     res.cc(1, err.message);
   }

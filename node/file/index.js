@@ -124,6 +124,67 @@ function isUnderSrc(fullPath, rootDir) {
 }
 
 /**
+ * 转义 HTML 特殊字符，防止注入
+ * @param {string} str 原始字符串
+ * @returns {string}
+ */
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
+}
+
+/**
+ * 更新项目 index.html 的 title 和 description
+ * @param {string} dirPath 项目根目录
+ * @param {string} title 页面标题
+ * @param {string} [desc] 页面描述，无则移除 description meta
+ */
+export async function updateProjectIndexHtml(dirPath, title, desc) {
+  const indexPath = path.join(dirPath, 'index.html');
+  let html = await fs.readFile(indexPath, 'utf-8');
+
+  html = html.replace(/<title>[\s\S]*?<\/title>/i, `<title>${escapeHtml(title)}</title>`);
+
+  const descMetaRegex = /<meta\s+name=["']description["'][^>]*>/i;
+  const descText = desc?.trim();
+
+  if (descText) {
+    const metaTag = `<meta name="description" content="${escapeHtml(descText)}">`;
+    html = descMetaRegex.test(html)
+      ? html.replace(descMetaRegex, metaTag)
+      : html.replace(/<\/head>/i, `    ${metaTag}\n  </head>`);
+  } else {
+    html = html.replace(/\s*<meta\s+name=["']description["'][^>]*>\s*/i, '\n');
+  }
+
+  await fs.writeFile(indexPath, html, 'utf-8');
+}
+
+/**
+ * 拷贝文件夹到指定目录
+ * @param {string} sourceDir 源目录
+ * @param {string} targetDir 目标目录
+ * @returns {Promise<void>}
+ */
+export async function copyDir(sourceDir, targetDir) {
+  await fs.cp(sourceDir, targetDir, { recursive: true,filter: src => !src.includes('node_modules')});
+  return {dirPath: targetDir}
+}
+
+/**
+ * 删除文件夹
+ * @param {string} dirPath 文件夹路径
+ * @returns {Promise<void>}
+ */
+export async function deleteDir(dirPath) {
+  await fs.rm(dirPath, { recursive: true });
+  return {dirPath}
+}
+
+/**
  * 获取指定目录下的所有文件
  * @param {string} dir 项目根目录
  * @returns {Promise<Array<{path: string, name: string, relativePath: string}>>}

@@ -1,0 +1,21 @@
+create database gameAgent;
+
+use gameAgent;
+
+CREATE TABLE users (
+    id INT PRIMARY KEY AUTO_INCREMENT comment '用户Id',  -- 主键+自增
+    account VARCHAR(50) NOT NULL comment '账号',          -- 非空
+    password varchar(200) NOT NULL comment '密码',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP comment '创建时间'
+) comment '用户表' AUTO_INCREMENT = 10000;
+
+alter table users add nickname varchar(20) default '匿名用户' comment '用户昵称'
+
+create TABLE projects(
+    id INT PRIMARY KEY AUTO_INCREMENT comment '项目id',
+    account varchar(50) NOT NULL comment '用户账号',
+    dir_path varchar(200) NOT NULL comment '项目路径(绝对)',
+    title varchar(100) NOT NULL comment '项目标题',
+    `desc` varchar(500) default '' comment '项目描述',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP comment '创建时间'
+)comment '项目表' auto_increment = 100;
