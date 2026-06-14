@@ -25,11 +25,9 @@ create TABLE projects(
 写法一：ALTER TABLE（常用）
 USE gameAgent;
 -- users 表：账号唯一索引
-ALTER TABLE users
-ADD UNIQUE INDEX uk_users_account (account);
+ALTER TABLE users ADD UNIQUE INDEX uk_users_account (account);
 -- projects 表：账号普通索引
-ALTER TABLE projects
-ADD INDEX idx_projects_account (account);
+ALTER TABLE projects ADD INDEX idx_projects_account (account);
 写法二：CREATE INDEX
 USE gameAgent;
 CREATE UNIQUE INDEX uk_users_account ON users (account);
@@ -41,7 +39,4 @@ USE gameAgent;
 SHOW INDEX FROM users;
 SHOW INDEX FROM projects;
 -- 2. 创建唯一索引前，确认 account 没有重复数据
-SELECT account, COUNT(*) AS cnt
-FROM users
-GROUP BY account
-HAVING cnt > 1;
+SELECT account, COUNT(*) AS cnt FROM users GROUP BY account HAVING cnt > 1;
