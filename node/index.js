@@ -1,11 +1,11 @@
 import express from 'express';
 import cors from 'cors';
-import connection from '../Mysql/index.js';
 import resCC from './middleware/resCC.js';
 import authJWT from './middleware/authJWT.js';
 import { register, login } from './auth/index.js';
 import { getProjectTempFiles, getFileContent, writeFileContent, copyDir } from './file/index.js';
 import { createProject, getProjectList, deleteProject,updateProject } from './project/index.js';
+import { createSession, getSessionList,updateSession,deleteSession } from './session/index.js';
 
 /** 默认服务端口 */
 const PORT = 3000;
@@ -155,6 +155,58 @@ app.patch('/project/update',authJWT, async (req, res) => {
   try {
     const result = await updateProject(body, req.user);
     res.cc(0, '修改成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+/** 创建会话 不同title代表不同会话 */
+app.post('/session/create',authJWT, async (req, res) => {
+  const body = req.body;
+  if(!body.role) res.cc(1, '角色不能为空');
+  if(!body.projectId) res.cc(1, '项目id不能为空');
+  if(!body.content) res.cc(1, '内容不能为空');
+  try {
+    const result = await createSession(body, req.user);
+    res.cc(0, '创建成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 获取会话列表 */
+app.get('/session/list',authJWT, async (req, res) => {
+  const { projectId,title } = req.query;
+  if(!projectId) res.cc(1, '项目id不能为空');
+  try {
+    const result = await getSessionList(projectId,title ? title : undefined, req.user);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 修改会话标题 */
+app.patch('/session/update',authJWT, async (req, res) => {
+  const { title,oldTitle,projectId } = req.body;
+  if(!title) res.cc(1, '新标题不能为空');
+  if(!oldTitle) res.cc(1, '旧标题不能为空');
+  if(!projectId) res.cc(1, '项目id不能为空');
+  try {
+    const result = await updateSession(req.body, req.user);
+    res.cc(0, '修改成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 删除会话 */
+app.post('/session/delete',authJWT, async (req, res) => {
+  const { title,projectId } = req.body;
+  if(!title) res.cc(1, '标题不能为空');
+  if(!projectId) res.cc(1, '项目id不能为空');
+  try {
+    const result = await deleteSession(req.body, req.user);
+    res.cc(0, '删除成功', result);
   } catch (err) {
     res.cc(1, err.message);
   }

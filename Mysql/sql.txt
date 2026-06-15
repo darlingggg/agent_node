@@ -21,7 +21,7 @@ create TABLE projects(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP comment '创建时间'
 )comment '项目表' auto_increment = 100;
 
-// 建立索引的两种方式
+// 建立索引的两种方式 ===========================================================
 写法一：ALTER TABLE（常用）
 USE gameAgent;
 -- users 表：账号唯一索引
@@ -40,3 +40,21 @@ SHOW INDEX FROM users;
 SHOW INDEX FROM projects;
 -- 2. 创建唯一索引前，确认 account 没有重复数据
 SELECT account, COUNT(*) AS cnt FROM users GROUP BY account HAVING cnt > 1;
+
+// ===========================================================================
+create table sessions(
+    id INT primary key auto_increment comment '会话id',
+    message_id INT comment 'ai返回完整内容对应id',
+    project_id INT not null comment '关联项目id',
+    title varchar(50) comment '会话标题',
+    account varchar(50) NOT NULL comment '用户账号',
+    role varchar(20) NOT NULL comment '角色类型(用户/ai)',
+    content text comment '当前会话内容',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP comment '创建时间'
+)comment '会话表';
+
+create table messages(
+    id INT primary key auto_increment comment '消息id',
+    content text comment '消息完整内容',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP comment '创建时间'
+)comment '消息表';
