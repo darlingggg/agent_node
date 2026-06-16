@@ -62,3 +62,9 @@ export const deleteSession = async (body, user) => {
   const [result] = await connection.query('delete from sessions where title = ? and project_id = ? and account = ?', [title,projectId,account]);
   return { content: '删除成功',affectedRows: result.affectedRows || 0 };
 }
+
+/** 获取ai会话详情 */
+export const getSessionDetail = async (id) => {
+  const [result] = await connection.query('select * from messages where id = ?', [id]);
+  return result;
+}

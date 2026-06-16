@@ -12,3 +12,5 @@ Thumbs.db
 # IDE
 .idea/
 .vscode/
+# 秘钥
+key.js

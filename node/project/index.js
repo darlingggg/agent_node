@@ -6,7 +6,7 @@ const sourceDir = 'C:/pro_self/projectTemp';
 /** 创建项目 */
 export const createProject = async (user, body) => {
   let targetDir = 'C:/pro_self/copyPro';
-  targetDir = targetDir + '/' + Math.random().toString(36).substring(2, 15)+ '_' + (+Date.now());
+  targetDir = targetDir + '/' + "project" + Math.random().toString(36).substring(2, 15)+ '_' + (+Date.now());
   const { dirPath } = await copyDir(sourceDir, targetDir);
   await updateProjectIndexHtml(dirPath, body.title, body.desc);
   const [result] = await connection.query(
@@ -26,6 +26,16 @@ export const getProjectList = async (user) => {
     [user.account]
   );
   return result;
+}
+
+/** 获取项目详情 */
+export const getProjectInfo = async (id, user) => {
+  const [rows] = await connection.query(
+    'SELECT * FROM projects WHERE id = ? AND account = ?',
+    [id, user.account]
+  );
+  if (rows.length === 0) throw new Error('项目不存在');
+  return rows[0];
 }
 
 /** 删除项目 */
