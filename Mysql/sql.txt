@@ -58,3 +58,11 @@ create table messages(
     content text comment '消息完整内容',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP comment '创建时间'
 )comment '消息表';
+
+create table log(
+    id INT primary key auto_increment comment '日志id',
+    content text comment '日志内容',
+    project_id INT not null comment '关联项目id',
+    account varchar(50) not null comment '用户账号',
+    created_at timestamp default current_timestamp comment '创建时间'
+)comment '日志表' auto_increment = 1000;
