@@ -6,6 +6,7 @@ import { register, login } from './auth/index.js';
 import { getProjectTempFiles, getFileContent, writeFileContent, copyDir } from './file/index.js';
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo } from './project/index.js';
 import { createSession, getSessionList,updateSession,deleteSession,getSessionDetail } from './session/index.js';
+import { addLog, getLogList } from './log/index.js';
 import { chat } from './openai/index.js';
 
 /** 默认服务端口 */
@@ -270,9 +271,31 @@ app.post('/chat/stream', authJWT, async (req, res) => {
   }
 })
 
-/** 启动 HTTP 服务 */
+/** 添加日志 */
+app.post('/log/add',authJWT, async (req, res) => {
+  const { content, projectId } = req.body;
+  if(!content) return res.cc(1, '日志内容不能为空');
+  if(!projectId) return res.cc(1, '项目id不能为空');
+  try {
+    const result = await addLog(content, projectId, req.user);
+    res.cc(0, '添加成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
+/** 获取日志列表 */
+app.get('/log/list',authJWT, async (req, res) => {
+  const { projectId } = req.query;
+  if(!projectId) return res.cc(1, '项目id不能为空');
+  try {
+    const result = await getLogList(projectId, req.user);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
 app.listen(PORT, () => {
   console.log(`Express 服务已启动: http://localhost:${PORT}`);
 });
-
-export default app;
