@@ -2,11 +2,13 @@ import { copyDir, deleteDir, updateProjectIndexHtml } from '../file/index.js';
 import { markProjectSessionsDeleted } from '../session/index.js';
 import connection from '../../Mysql/index.js';
 
-const sourceDir = 'C:/ai/projectTemp';
+// const sourceDir = 'C:/ai/projectTemp';
+const rootDir = '/www/wwwroot/ai_agent';
+const sourceDir = rootDir + '/projectTemp';
 
 /** 创建项目 */
 export const createProject = async (user, body) => {
-  let targetDir = 'C:/ai/copyPro';
+  let targetDir = rootDir + '/copyPro';
   targetDir = targetDir + '/' + "project" + Math.random().toString(36).substring(2, 15)+ '_' + (+Date.now());
   const { dirPath } = await copyDir(sourceDir, targetDir);
   await updateProjectIndexHtml(dirPath, body.title, body.desc);

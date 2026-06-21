@@ -11,6 +11,7 @@ import { chat, keepContext,message } from './openai/index.js';
 
 /** 默认服务端口 */
 const PORT = 3000;
+// const PORT = 5000;
 
 /** 创建 Express 应用实例 */
 const app = express();
