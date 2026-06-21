@@ -1,5 +1,24 @@
 import connection from '../../Mysql/index.js';
 
+/** 软删除标题后缀：_delete_ + 当前时间戳后10位 */
+const DELETE_TITLE_SUFFIX = () => `_delete_${String(Date.now()).slice(-10)}`;
+
+/** 已软删除会话的 title 匹配规则 */
+const DELETED_TITLE_REGEXP = '_delete_[0-9]{10}$';
+
+/**
+ * 按项目软删除全部会话（重命名 title，保留消息记录）
+ * @param {number|string} projectId 项目 id
+ * @param {string} account 用户账号
+ */
+export const markProjectSessionsDeleted = async (projectId, account) => {
+  const suffix = DELETE_TITLE_SUFFIX();
+  await connection.query(
+    'UPDATE sessions SET title = CONCAT(title, ?) WHERE project_id = ? AND account = ? AND title NOT REGEXP ?',
+    [suffix, projectId, account, DELETED_TITLE_REGEXP]
+  );
+}
+
 /** 创建会话 */
 export const createSession = async (body, user) => {
   const { role, projectId, content } = body;
@@ -29,13 +48,14 @@ export const createSession = async (body, user) => {
   return { id: res2.insertId,content: '创建成功' };
 }
 
-/** 获取会话列表 */
+/** 获取会话列表（不含已软删除的会话） */
 export const getSessionList = async (projectId, title = undefined, user) => {
   const account = user.account;
-  const where = title ? `and title = '${title}'` : '';
+  const where = title ? `and title = ?` : '';
+  const params = title ? [projectId, title, account] : [projectId, account];
   const [result] = await connection.query(
-    `select * from sessions where project_id = ? ${where} and account = ?`,
-    [projectId, account]
+    `select * from sessions where project_id = ? ${where} and account = ? and title not regexp ?`,
+    [...params, DELETED_TITLE_REGEXP]
   );
   return result;
 }
@@ -51,16 +71,16 @@ export const updateSession = async (body, user) => {
   return { content: '修改成功',affectedRows: result.affectedRows || 0 };
 }
 
-/** 删除会话 */
+/** 软删除会话（重命名 title，保留消息记录） */
 export const deleteSession = async (body, user) => {
-  const { title,projectId } = body;
+  const { title, projectId } = body;
   const account = user.account;
-  const [sessions] = await connection.query('select * from sessions where title = ? and project_id = ? and account = ?', [title,projectId,account]);
-  const messageIds = []
-  for(const item of sessions) if(item.message_id) messageIds.push(item.message_id);
-  if(messageIds.length > 0) await connection.query('delete from messages where id in (?)', [messageIds]);
-  const [result] = await connection.query('delete from sessions where title = ? and project_id = ? and account = ?', [title,projectId,account]);
-  return { content: '删除成功',affectedRows: result.affectedRows || 0 };
+  const suffix = DELETE_TITLE_SUFFIX();
+  const [result] = await connection.query(
+    'update sessions set title = concat(title, ?) where title = ? and project_id = ? and account = ?',
+    [suffix, title, projectId, account]
+  );
+  return { content: '删除成功', affectedRows: result.affectedRows || 0 };
 }
 
 /** 获取ai会话详情 */

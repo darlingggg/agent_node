@@ -7,13 +7,16 @@ import { getProjectTempFiles, getFileContent, writeFileContent, copyDir } from '
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo } from './project/index.js';
 import { createSession, getSessionList,updateSession,deleteSession,getSessionDetail } from './session/index.js';
 import { addLog, getLogList } from './log/index.js';
-import { chat } from './openai/index.js';
+import { chat, keepContext,message } from './openai/index.js';
 
 /** 默认服务端口 */
 const PORT = 3000;
 
 /** 创建 Express 应用实例 */
 const app = express();
+
+// 创建上下文map
+const contextMap = new Map();
 
 // 接口返回 JSON，关闭 ETag 避免浏览器缓存导致 304
 app.set('etag', false);
@@ -223,7 +226,7 @@ app.get('/session/detail',authJWT, async (req, res) => {
 
 /** 与AI对话（SSE 流式） */
 app.post('/chat/stream', authJWT, async (req, res) => {
-  const { prompt, projectId } = req.body
+  const { prompt, projectId,title } = req.body
   if (!prompt) return res.cc(1, '发送消息为空')
   if (!projectId) return res.cc(1, '操作项目为空')
 
@@ -249,16 +252,24 @@ app.post('/chat/stream', authJWT, async (req, res) => {
     if (res.writableEnded) return
     clientClosed = true
   })
+  let context = [...message]
+  if(title && !contextMap.has(`${req.user.account}-${projectId}-${title}`)){
+    const {result,length} = await keepContext(req.user.account,projectId,title);
+    context = context.concat(result.map(item => ({role: item.role, content: item.content})));
+    if(length > 0) contextMap.set(`${req.user.account}-${projectId}-${title}`,context);
+  }else if(title && contextMap.has(`${req.user.account}-${projectId}-${title}`)){
+    context = context.concat(contextMap.get(`${req.user.account}-${projectId}-${title}`));
+  }else{
+    contextMap.set(`${req.user.account}-${projectId}-${title}`,context);
+  }
 
   try {
     const projectInfo = await getProjectInfo(projectId, req.user)
     const dirPath = projectInfo.dir_path
-    const title = projectInfo.title ?? ""
+    const projectTitle = projectInfo.title ?? ""
     const desc = projectInfo.desc ?? ""
-    const content = `项目标题: ${title}\n项目描述: ${desc}\n项目Path: ${dirPath}\n用户消息: ${prompt}\n注: 优先读取用户消息(其他的只是附加可能会使用也可能不使用)，根据用户消息再执行下一步的动作`
-
-    await chat(content, send)
-
+    const content = `【用户指令 - 最高优先级，请以此为准】\n${prompt}\n\n【项目背景 - 操作文件时使用】\n项目标题: ${projectTitle}\n项目描述: ${desc}\n项目Path: ${dirPath}\n组件库: vant\nCSS: tailwindcss\n\n注: 所有文件操作必须使用上述项目Path，path 参数用相对路径；看项目效果只需提示用户刷新页面`
+    await chat(content, send, context, dirPath)
     if (clientClosed) return
 
     send({ event: 'done', data: null })

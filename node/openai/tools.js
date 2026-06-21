@@ -4,13 +4,13 @@ export const tools = [
     "type": "function",
     "function": {
       "name": "get_file_list",
-      "description": "获取指定目录下的文件列表",
+      "description": "获取当前项目目录下的文件列表，dirPath 由系统自动注入，传任意占位值即可",
       "parameters": {
         "type": "object",
         "properties": {
           "dirPath": {
               "type": "string",
-              "description": "目录路径，如C:/home/user/project，请注意目录路径是绝对路径"
+              "description": "项目根目录，由系统自动注入，无需自行填写"
           },
         },
         "required": ["dirPath"]
@@ -21,17 +21,17 @@ export const tools = [
     "type": "function",
     "function": {
       "name": "get_file_content",
-      "description": "获取指定文件的内容",
+      "description": "获取项目内指定文件的内容，dirPath 由系统自动注入",
       "parameters": {
         "type": "object",
         "properties": {
           "path": {
               "type": "string",
-              "description": "文件路径，如C:/home/user/file.txt，请注意文件路径是绝对路径"
+              "description": "文件相对路径，如 src/App.vue 或 index.html"
           },
           "dirPath":{
             "type": "string",
-            "description": "项目根目录，如C:/home/user/project，请注意项目根目录是绝对路径"
+            "description": "项目根目录，由系统自动注入，无需自行填写"
           },
         },
         "required": ["path", "dirPath"]
@@ -42,17 +42,17 @@ export const tools = [
     "type": "function",
     "function": {
       "name": "write_file_content",
-      "description": "写入文件内容,如果当前文件不存在则创建文件,src 目录下支持自动创建父目录，其他目录仅允许在已有目录中创建文件",
+      "description": "写入项目内文件内容，dirPath 由系统自动注入；文件不存在则创建，src 目录下支持自动创建父目录",
       "parameters": {
         "type": "object",
         "properties": {
           "dirPath": {
               "type": "string",
-              "description": "目录路径，如C:/home/user/project，请注意目录路径是绝对路径"
+              "description": "项目根目录，由系统自动注入，无需自行填写"
           },
           "path": {
             "type": "string",
-            "description": "文件路径，如C:/home/user/file.txt，请注意文件路径是绝对路径"
+            "description": "文件相对路径，如 src/App.vue 或 index.html"
           },
           "content": {
             "type": "string",

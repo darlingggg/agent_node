@@ -1,11 +1,12 @@
 import { copyDir, deleteDir, updateProjectIndexHtml } from '../file/index.js';
+import { markProjectSessionsDeleted } from '../session/index.js';
 import connection from '../../Mysql/index.js';
 
-const sourceDir = 'C:/pro_self/projectTemp';
+const sourceDir = 'C:/ai/projectTemp';
 
 /** 创建项目 */
 export const createProject = async (user, body) => {
-  let targetDir = 'C:/pro_self/copyPro';
+  let targetDir = 'C:/ai/copyPro';
   targetDir = targetDir + '/' + "project" + Math.random().toString(36).substring(2, 15)+ '_' + (+Date.now());
   const { dirPath } = await copyDir(sourceDir, targetDir);
   await updateProjectIndexHtml(dirPath, body.title, body.desc);
@@ -46,6 +47,7 @@ export const deleteProject = async (id, user) => {
   );
   if (rows.length === 0) throw new Error('项目不存在');
   const dirPath = rows[0].dir_path;
+  await markProjectSessionsDeleted(id, user.account);
   const [result] = await connection.query(
     'DELETE FROM projects WHERE id = ? AND account = ?',
     [id, user.account]
