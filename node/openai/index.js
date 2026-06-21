@@ -1,5 +1,6 @@
 import path from 'path'
 import OpenAI from 'openai'
+import { encodingForModel } from 'js-tiktoken'
 import { baseURL, key } from '../../key.js'
 import { tools, functionMap } from './tools.js'
 import connection from '../../Mysql/index.js';
@@ -8,6 +9,36 @@ const client = new OpenAI({
     apiKey: key,
     baseURL: baseURL,
 })
+
+/** token 编码器（用于估算上下文长度） */
+const tokenizer = encodingForModel('gpt-4')
+
+/**
+ * 统计 messages 上下文的 token 数量
+ * @param {Array} context 对话上下文
+ * @returns {number}
+ */
+function countContextTokens(context) {
+  let total = 0
+  for (const msg of context) {
+    total += 4
+    if (msg.role) total += tokenizer.encode(msg.role).length
+    if (typeof msg.content === 'string' && msg.content) {
+      total += tokenizer.encode(msg.content).length
+    }
+    if (msg.tool_calls) {
+      total += tokenizer.encode(JSON.stringify(msg.tool_calls)).length
+    }
+    if (msg.tool_call_id) {
+      total += tokenizer.encode(msg.tool_call_id).length
+    }
+    if (msg.name) {
+      total += tokenizer.encode(msg.name).length
+    }
+  }
+  total += 2
+  return total
+}
 
 /** 系统提示词 */
 const SYSTEM_PROMPT = `【角色设定】
@@ -159,6 +190,9 @@ export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(
       onEvent({event: 'tool_end', data: `工具执行完毕: ${name} $$ 结果: ${result}`})
     }
     await chat("", onEvent, context, projectDirPath)
+  } else {
+    const tokenCount = countContextTokens(context)
+    console.log(`[上下文] 当前 token 数: ${tokenCount}，消息条数: ${context.length}`)
   }
 }
 
