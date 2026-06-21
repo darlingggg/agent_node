@@ -155,7 +155,7 @@ export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(
   if(userMessage) context.push({role: "user", content: userMessage})
   
   const stream = await client.chat.completions.create({
-    model: "deepseek-v4-pro",
+    model: "deepseek-v4-flash",
     messages: context,
     tools: tools,
     tool_choice: "auto",
