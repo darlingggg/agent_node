@@ -3,7 +3,7 @@ import cors from 'cors';
 import resCC from './middleware/resCC.js';
 import authJWT from './middleware/authJWT.js';
 import { register, login } from './auth/index.js';
-import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent } from './file/index.js';
+import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta } from './file/index.js';
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo } from './project/index.js';
 import { createSession, getSessionList,updateSession,deleteSession,getSessionDetail } from './session/index.js';
 import { addLog, getLogList } from './log/index.js';
@@ -127,6 +127,19 @@ app.post('/file/delete',async(req,res)=>{
     res.cc(1, err.message);
   }
 })
+
+/** 获取文件字节数与行数，dir 为项目根目录，path 为文件路径 */
+app.post('/file/meta', async (req, res) => {
+  const { dir, path: filePath } = req.body;
+  if (!filePath) return res.cc(1, '文件路径不能为空');
+  if (!dir) return res.cc(1, '项目根目录不能为空');
+  try {
+    const result = await getFileMeta(filePath, dir);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
 
 /** 创建项目 */
 app.post('/project/create',authJWT, async (req, res) => {
