@@ -282,3 +282,36 @@ export async function writeFileContent(filePath, content = '', dir) {
     relativePath: path.relative(rootDir, fullPath),
   };
 }
+
+/**
+ * 
+ * @param {string} filePath 文件绝对路径
+ * @returns {Promise<number>} 文件字节数
+ */
+export async function getFileBytes(filePath) {
+  return fs.stat(filePath);
+}
+
+/**
+ * 删除指定文件
+ * @param {string} filePath 文件路径（绝对或相对项目根）
+ * @param {string} [dir] 项目根目录
+ * @returns {Promise<{ path: string, relativePath: string }>}
+ */
+export async function deleteFileContent(filePath, dir) {
+  const rootDir = resolveRootDir(dir)
+  const fullPath = resolveTargetPath(filePath, rootDir)
+  assertWithinRoot(fullPath, rootDir)
+
+  const stat = await fs.stat(fullPath)
+  if (stat.isDirectory()) {
+    throw new Error('目标路径是目录，请使用 deleteDir 删除')
+  }
+
+  await fs.unlink(fullPath)
+
+  return {
+    content: '删除成功',
+    path: fullPath,
+  }
+}
