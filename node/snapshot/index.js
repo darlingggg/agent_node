@@ -1,5 +1,6 @@
 import connection from '../../Mysql/index.js';
 import { getProjectTempFiles, getFileContent,getFileBytes } from '../file/index.js';
+import { countFileLines } from '../file/index.js';
 
 export const addSnapshot = async (projectId, version, dirPath, desc, user) => {
   const files = await getProjectTempFiles(dirPath);
@@ -8,7 +9,7 @@ export const addSnapshot = async (projectId, version, dirPath, desc, user) => {
     const filePath = file.path;
     const fileContent = await getFileContent(filePath, dirPath);
     const bytes = (await getFileBytes(filePath)).size;
-    const length = fileContent === '' ? 0 : fileContent.split(/\r?\n/).length;
+    const length = await countFileLines(filePath);
     snapList.push({projectId, account:user.account, version, desc:desc||'',filePath, fileContent, bytes, length});
   }
   if(snapList.length === 0) throw new Error('项目下没有文件，无法添加快照');

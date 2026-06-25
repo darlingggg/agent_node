@@ -4,7 +4,8 @@ import connection from '../../Mysql/index.js';
 
 // const sourceDir = 'C:/ai/projectTemp';
 // const rootDir = '/www/wwwroot/ai_agent';
-const rootDir = 'C:/pro_server';
+// const rootDir = 'C:/pro_server';
+const rootDir = 'C:/ai';
 const sourceDir = rootDir + '/projectTemp';
 
 /** 创建项目 */

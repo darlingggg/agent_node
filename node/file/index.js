@@ -1,5 +1,7 @@
+import { createReadStream } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
+import readline from 'readline';
 
 /** 默认项目根目录 */
 export const PROJECT_TEMP_ROOT = 'C:\\pro_self\\projectTemp';
@@ -284,12 +286,57 @@ export async function writeFileContent(filePath, content = '', dir) {
 }
 
 /**
- * 
+ * 流式统计文件行数，避免将整个文件读入内存
+ * @param {string} fullPath 文件绝对路径
+ * @returns {Promise<number>}
+ */
+export async function countFileLines(fullPath) {
+  let lines = 0;
+  const rl = readline.createInterface({
+    input: createReadStream(fullPath),
+    crlfDelay: Infinity,
+  });
+
+  for await (const _ of rl) {
+    lines++;
+  }
+
+  return lines;
+}
+
+/**
+ * 获取文件 stat 信息
  * @param {string} filePath 文件绝对路径
- * @returns {Promise<number>} 文件字节数
+ * @returns {Promise<import('fs').Stats>}
  */
 export async function getFileBytes(filePath) {
   return fs.stat(filePath);
+}
+
+/**
+ * 获取文件字节数与行数
+ * @param {string} filePath 文件路径（绝对或相对项目根）
+ * @param {string} [dir] 项目根目录
+ * @returns {Promise<{ path: string, relativePath: string, bytes: number, length: number }>}
+ */
+export async function getFileMeta(filePath, dir) {
+  const rootDir = resolveRootDir(dir);
+  const fullPath = resolveTargetPath(filePath, rootDir);
+  assertWithinRoot(fullPath, rootDir);
+
+  const stat = await fs.stat(fullPath);
+  if (stat.isDirectory()) {
+    throw new Error('目标路径是目录，无法获取文件信息');
+  }
+
+  const length = await countFileLines(fullPath);
+
+  return {
+    path: fullPath,
+    relativePath: path.relative(rootDir, fullPath),
+    bytes: stat.size,
+    length,
+  };
 }
 
 /**
