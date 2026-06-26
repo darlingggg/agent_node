@@ -82,3 +82,9 @@ export const buildCommand = async (projectPath,send=()=>{}) => {
 
   send({event:'done',data:JSON.stringify({ success: true, code: 0, stdout: uploadRes.stdout, stderr: uploadRes.stderr,link: extractDeployUrl(uploadRes.stdout) })})
 }
+
+
+// 删除部署
+// npx wrangler pages deployment delete <deployment-id> --project-name=<你的项目名>
+// 获取部署Id
+// npx wrangler pages deployment list --project-name=gen-agent --json
