@@ -9,6 +9,7 @@ import { createSession, getSessionList,updateSession,deleteSession,getSessionDet
 import { addLog, getLogList } from './log/index.js';
 import { chat, keepContext,message } from './openai/index.js';
 import { addSnapshot, getSnapshotList,deleteSnapshot,changeSnapshot } from './snapshot/index.js';
+import { buildCommand } from './exec/index.js';
 
 /** 默认服务端口 */
 const PORT = 3000;
@@ -385,6 +386,42 @@ app.patch('/snapshot/change',authJWT, async (req, res) => {
     const result = await changeSnapshot(projectId,version,oldVersion,desc);
     res.cc(0, '修改成功', result);
   } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
+/** 构建并部署项目 */
+app.post('/project/build',authJWT,async(req,res)=>{
+  const { dir } = req.body;
+  if(!dir) return res.cc(1, '项目根目录不能为空');
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders?.()
+
+  let clientClosed = false
+
+  /** 推送 SSE 事件，格式与 chat 保持一致：{ event, data } */
+  const send = (msg) => {
+    if (clientClosed || res.writableEnded) return
+    res.write(`data: ${JSON.stringify(msg)}\n\n`)
+  }
+
+  res.on('close', () => {
+    if (res.writableEnded) return
+    clientClosed = true
+  })
+
+  try {
+    await buildCommand(dir,send);
+    if (clientClosed) return
+    res.end()
+  } catch (err) {
+    if (clientClosed) return
+    send({ event: 'error', data: '错误信息: \n' + err.message })
+    res.end()
     res.cc(1, err.message);
   }
 })
