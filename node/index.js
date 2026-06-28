@@ -4,12 +4,12 @@ import resCC from './middleware/resCC.js';
 import authJWT from './middleware/authJWT.js';
 import { register, login } from './auth/index.js';
 import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta } from './file/index.js';
-import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo } from './project/index.js';
+import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject } from './project/index.js';
 import { createSession, getSessionList,updateSession,deleteSession,getSessionDetail } from './session/index.js';
 import { addLog, getLogList } from './log/index.js';
 import { chat, keepContext,message } from './openai/index.js';
-import { addSnapshot, getSnapshotList,deleteSnapshot,changeSnapshot } from './snapshot/index.js';
-import { buildCommand } from './exec/index.js';
+import { addSnapshot, getSnapshotList,deleteSnapshot,changeSnapshot,getSnapshotNum,getCurrentVision } from './snapshot/index.js';
+import { buildCommand,deleteOnlineVersion } from './exec/index.js';
 
 /** 默认服务端口 */
 const PORT = 3000;
@@ -392,8 +392,12 @@ app.patch('/snapshot/change',authJWT, async (req, res) => {
 
 /** 构建并部署项目 */
 app.post('/project/build',authJWT,async(req,res)=>{
-  const { dir } = req.body;
+  const { dir,projectId } = req.body;
   if(!dir) return res.cc(1, '项目根目录不能为空');
+  if(!projectId) return res.cc(1, '项目id不能为空');
+
+  const snapshotNum = await getSnapshotNum(projectId,req.user);
+  if(snapshotNum >= 5) return res.cc(1, '快照数量不能超过5个，请删除旧版本快照');
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
   res.setHeader('Cache-Control', 'no-cache')
@@ -415,13 +419,29 @@ app.post('/project/build',authJWT,async(req,res)=>{
   })
 
   try {
-    await buildCommand(dir,send);
+    const {link,deploymentId} = await buildCommand(dir,send);
+    const oldDeploymentId = (await getProjectInfo(projectId,req.user)).cloudflare_id;
+    const {id} = await addSnapshot(projectId,'构建'+Math.random().toString(36).substring(2, 15),dir,'',req.user);
+    await buildProject(projectId,link,id,deploymentId);
+    if(oldDeploymentId) await deleteOnlineVersion(dir,oldDeploymentId);
     if (clientClosed) return
     res.end()
   } catch (err) {
     if (clientClosed) return
     send({ event: 'error', data: '错误信息: \n' + err.message })
     res.end()
+    res.cc(1, err.message);
+  }
+})
+
+/** 获取当前线上版本 */
+app.get('/project/version',authJWT,async(req,res)=>{
+  const { projectId } = req.query;
+  if(!projectId) return res.cc(1, '项目id不能为空');
+  try {
+    const result = await getCurrentVision(projectId);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
     res.cc(1, err.message);
   }
 })

@@ -21,6 +21,10 @@ create TABLE projects(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP comment '创建时间'
 )comment '项目表' auto_increment = 100;
 
+alter table projects add column link varchar(100) comment '线上地址';
+alter table projects add column current_vision int comment '当前线上版本ID';
+alter table projects add column cloudflare_id varchar(50) comment 'cloudflareId 删除线上版本';
+
 // 建立索引的两种方式 ===========================================================
 写法一：ALTER TABLE（常用）
 USE gameAgent;

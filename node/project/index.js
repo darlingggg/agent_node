@@ -81,3 +81,15 @@ export const updateProject = async (body,user) => {
   }
   return {content: '修改成功'}; 
 }
+
+/** 构建项目 */
+export const buildProject = async (projectId,link,visionId,deploymentId) => {
+  const [result] = await connection.query(
+    'UPDATE projects SET link = ?, current_vision = ?, cloudflare_id = ? WHERE id = ?',
+    [link, visionId, deploymentId, projectId]
+  );
+  if (result.affectedRows !== 1) {
+    throw new Error('构建项目失败，更新数据库失败');
+  }
+  return {content: '构建成功'};
+}
