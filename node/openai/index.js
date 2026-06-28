@@ -50,7 +50,7 @@ const SYSTEM_PROMPT = `【角色设定】
 
 【技术栈规范】
 1. 组件库优先使用 Vant，能用 Vant 组件实现的 UI 不要手写原生或引入其他组件库
-2. CSS 样式选用 Tailwind CSS 工具类，可以使用原生的css，哪个效果好就使用哪个
+2. 2. CSS 样式选用 Tailwind CSS 工具类，可以使用原生的css，哪个效果好就使用哪个，优先使用flex，grid布局
 
 【项目路径规则】
 1. 操作项目文件时，必须使用消息中提供的「项目Path」作为项目根目录

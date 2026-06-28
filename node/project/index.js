@@ -2,8 +2,9 @@ import { copyDir, deleteDir, updateProjectIndexHtml } from '../file/index.js';
 import { markProjectSessionsDeleted } from '../session/index.js';
 import connection from '../../Mysql/index.js';
 
-// const sourceDir = 'C:/ai/projectTemp';
-const rootDir = '/www/wwwroot/ai_agent';
+// const rootDir = '/www/wwwroot/ai_agent';
+// const rootDir = 'C:/pro_server';
+const rootDir = 'C:/ai';
 const sourceDir = rootDir + '/projectTemp';
 
 /** 创建项目 */
@@ -78,4 +79,16 @@ export const updateProject = async (body,user) => {
     throw new Error('修改项目失败，请稍后重试');
   }
   return {content: '修改成功'}; 
+}
+
+/** 构建项目 */
+export const buildProject = async (projectId,link,visionId,deploymentId) => {
+  const [result] = await connection.query(
+    'UPDATE projects SET link = ?, current_vision = ?, cloudflare_id = ? WHERE id = ?',
+    [link, visionId, deploymentId, projectId]
+  );
+  if (result.affectedRows !== 1) {
+    throw new Error('构建项目失败，更新数据库失败');
+  }
+  return {content: '构建成功'};
 }

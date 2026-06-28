@@ -3,11 +3,13 @@ import cors from 'cors';
 import resCC from './middleware/resCC.js';
 import authJWT from './middleware/authJWT.js';
 import { register, login } from './auth/index.js';
-import { getProjectTempFiles, getFileContent, writeFileContent, copyDir } from './file/index.js';
-import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo } from './project/index.js';
+import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta } from './file/index.js';
+import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject } from './project/index.js';
 import { createSession, getSessionList,updateSession,deleteSession,getSessionDetail } from './session/index.js';
 import { addLog, getLogList } from './log/index.js';
 import { chat, keepContext,message } from './openai/index.js';
+import { addSnapshot, getSnapshotList,deleteSnapshot,changeSnapshot,getSnapshotNum,getCurrentVision } from './snapshot/index.js';
+import { buildCommand,deleteOnlineVersion } from './exec/index.js';
 
 /** 默认服务端口 */
 const PORT = 3000;
@@ -109,6 +111,32 @@ app.post('/file/write', async (req, res) => {
     if (!filePath) return res.cc(1, 'path 不能为空');
     const result = await writeFileContent(filePath, content, dir);
     res.cc(0, '写入成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 删除文件 */
+app.post('/file/delete',async(req,res)=>{
+  const {dir,path:filePath} = req.body;
+  if(!filePath) return res.cc(1, '文件路径不能为空');
+  if(!dir) return res.cc(1, '项目根目录不能为空');
+  try {
+    const result = await deleteFileContent(filePath, dir);
+    res.cc(0, '删除成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
+/** 获取文件字节数与行数，dir 为项目根目录，path 为文件路径 */
+app.post('/file/meta', async (req, res) => {
+  const { dir, path: filePath } = req.body;
+  if (!filePath) return res.cc(1, '文件路径不能为空');
+  if (!dir) return res.cc(1, '项目根目录不能为空');
+  try {
+    const result = await getFileMeta(filePath, dir);
+    res.cc(0, '获取成功', result);
   } catch (err) {
     res.cc(1, err.message);
   }
@@ -308,6 +336,117 @@ app.get('/log/list',authJWT, async (req, res) => {
   }
 })
 
+/** 添加快照列表 */
+app.post('/snapshot/add',authJWT, async (req, res) => {
+  const { projectId,version,dirPath,desc } = req.body;
+  if(!version) return res.cc(1, '版本号不能为空');
+  if(!projectId) return res.cc(1, '关联项目不能为空');
+  if(!dirPath) return res.cc(1, '项目根路径不能为空');
+  try {
+    const result = await addSnapshot(projectId, version, dirPath, desc, req.user);
+    res.cc(0, '添加成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
+/** 获取快照列表 */
+app.get('/snapshot/list',authJWT, async (req, res) => {
+  const { projectId } = req.query;
+  if(!projectId) return res.cc(1, '项目id不能为空');
+  try {
+    const result = await getSnapshotList(projectId);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
+/** 删除快照列表 */
+app.post('/snapshot/delete',authJWT, async (req, res) => {
+  const { projectId,version } = req.body;
+  if(!projectId) return res.cc(1, '项目id不能为空');
+  if(!version) return res.cc(1, '版本号不能为空');
+  try {
+    const result = await deleteSnapshot(projectId,version);
+    res.cc(0, '删除成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
+/** 修改快照信息 */
+app.patch('/snapshot/change',authJWT, async (req, res) => {
+  const { projectId,version,oldVersion,desc } = req.body;
+  if(!projectId) return res.cc(1, '项目id不能为空');
+  if(!version) return res.cc(1, '版本号不能为空');
+  if(!oldVersion) return res.cc(1, '旧版本号不能为空');
+  if(version === oldVersion) return res.cc(1, '新旧版本号不能相同');
+  try {
+    const result = await changeSnapshot(projectId,version,oldVersion,desc);
+    res.cc(0, '修改成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
+/** 构建并部署项目 */
+app.post('/project/build',authJWT,async(req,res)=>{
+  const { dir,projectId } = req.body;
+  if(!dir) return res.cc(1, '项目根目录不能为空');
+  if(!projectId) return res.cc(1, '项目id不能为空');
+
+  const snapshotNum = await getSnapshotNum(projectId,req.user);
+  if(snapshotNum >= 5) return res.cc(1, '快照数量不能超过5个，请删除旧版本快照');
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders?.()
+
+  let clientClosed = false
+
+  /** 推送 SSE 事件，格式与 chat 保持一致：{ event, data } */
+  const send = (msg) => {
+    if (clientClosed || res.writableEnded) return
+    res.write(`data: ${JSON.stringify(msg)}\n\n`)
+  }
+
+  res.on('close', () => {
+    if (res.writableEnded) return
+    clientClosed = true
+  })
+
+  try {
+    const {link,deploymentId} = await buildCommand(dir,send);
+    const oldDeploymentId = (await getProjectInfo(projectId,req.user)).cloudflare_id;
+    const {id} = await addSnapshot(projectId,'构建'+Math.random().toString(36).substring(2, 15),dir,'',req.user);
+    await buildProject(projectId,link,id,deploymentId);
+    if(oldDeploymentId) await deleteOnlineVersion(dir,oldDeploymentId);
+    if (clientClosed) return
+    res.end()
+  } catch (err) {
+    if (clientClosed) return
+    send({ event: 'error', data: '错误信息: \n' + err.message })
+    res.end()
+    res.cc(1, err.message);
+  }
+})
+
+/** 获取当前线上版本 */
+app.get('/project/version',authJWT,async(req,res)=>{
+  const { projectId } = req.query;
+  if(!projectId) return res.cc(1, '项目id不能为空');
+  try {
+    const result = await getCurrentVision(projectId);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
 app.listen(PORT, () => {
   console.log(`Express 服务已启动: http://localhost:${PORT}`);
 });
+

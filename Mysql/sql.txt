@@ -21,6 +21,10 @@ create TABLE projects(
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP comment '创建时间'
 )comment '项目表' auto_increment = 100;
 
+alter table projects add column link varchar(100) comment '线上地址';
+alter table projects add column current_vision int comment '当前线上版本ID';
+alter table projects add column cloudflare_id varchar(50) comment 'cloudflareId 删除线上版本';
+
 // 建立索引的两种方式 ===========================================================
 写法一：ALTER TABLE（常用）
 USE gameAgent;
@@ -66,3 +70,18 @@ create table log(
     account varchar(50) not null comment '用户账号',
     created_at timestamp default current_timestamp comment '创建时间'
 )comment '日志表' auto_increment = 1000;
+
+create table snapshots(
+    id INT primary key auto_increment comment '快照id',
+    project_id int not null comment '关联项目id',
+    account varchar(50) not null comment '用户账号',
+    version varchar(50) not null comment '版本号',
+    `desc` varchar(100) comment '版本描述',
+    file_path varchar(200) not null comment '文件绝对路径',
+    file_content text comment '文件内容',
+    bytes varchar(100) not null comment '文件大小',
+    length int comment '文件行数',
+    created_at timestamp default current_timestamp comment '创建时间'
+)comment '快照表' auto_increment = 1000;
+
+CREATE INDEX idx_snapshots_project_version ON snapshots (project_id, version);
