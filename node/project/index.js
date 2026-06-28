@@ -2,7 +2,6 @@ import { copyDir, deleteDir, updateProjectIndexHtml } from '../file/index.js';
 import { markProjectSessionsDeleted } from '../session/index.js';
 import connection from '../../Mysql/index.js';
 
-// const sourceDir = 'C:/ai/projectTemp';
 // const rootDir = '/www/wwwroot/ai_agent';
 // const rootDir = 'C:/pro_server';
 const rootDir = 'C:/ai';
