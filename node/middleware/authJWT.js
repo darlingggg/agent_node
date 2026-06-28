@@ -7,7 +7,10 @@ const authJWT = (req, res, next) => {
   const authHeader = req.headers.authorization;
 
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    res.cc(1, '未登录或 Token 无效');
+    res.status(401).json({
+      status: 1,
+      message: '未登录或 Token 无效'
+    });
     return;
   }
 
@@ -17,7 +20,11 @@ const authJWT = (req, res, next) => {
     req.user = verifyToken(token);
     next();
   } catch {
-    res.cc(1, 'Token 已过期或无效');
+    res.status(401).json({
+      status: 1,
+      message: 'Token 已过期或无效'
+    });
+    return;
   }
 };
 
