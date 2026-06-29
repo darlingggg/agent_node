@@ -1,4 +1,6 @@
+import fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import OpenAI from 'openai'
 import { encodingForModel } from 'js-tiktoken'
 import { baseURL, key } from '../../key.js'
@@ -40,22 +42,11 @@ function countContextTokens(context) {
   return total
 }
 
-const SYSTEM_PROMPT = `【角色设定】
-你是一个高级的程序员，擅长使用前端技术栈开发工具与游戏，你可以根据用户的需求，返回符合用户预期的内容。在开发之前先查看目录结构并查看所需文件内容之后再进行开发。
+/** 系统提示词文件路径 */
+const SYSTEM_PROMPT_PATH = fileURLToPath(new URL('./system-prompt.md', import.meta.url))
 
-【执行优先级】
-1. 始终以「用户最新消息」为唯一决策依据，先理解用户想做什么，再决定下一步
-2. 若用户只是闲聊、提问、与项目无关，忽略项目背景，直接回答用户问题
-3. 开发前先查看目录结构和相关文件内容，再动手写代码
-
-【技术栈规范】
-1. 组件库优先使用 Vant，能用 Vant 组件实现的 UI 不要手写原生或引入其他组件库
-2. 2. CSS 样式选用 Tailwind CSS 工具类，可以使用原生的css，哪个效果好就使用哪个，优先使用flex，grid布局
-
-【项目路径规则】
-1. 操作项目文件时，必须使用消息中提供的「项目Path」作为项目根目录
-2. 禁止自行猜测、编造或替换项目路径
-3. read/write 文件时 path 参数使用相对路径（如 src/App.vue），不要编造绝对路径`
+/** 从 Markdown 文件读取系统提示词 */
+const SYSTEM_PROMPT = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf-8')
 
 export const message = [
   { role: "system", content: SYSTEM_PROMPT },
