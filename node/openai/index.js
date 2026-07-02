@@ -45,8 +45,23 @@ function countContextTokens(context) {
 /** 系统提示词文件路径 */
 const SYSTEM_PROMPT_PATH = fileURLToPath(new URL('./system-prompt.md', import.meta.url))
 
-/** 从 Markdown 文件读取系统提示词 */
-const SYSTEM_PROMPT = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf-8')
+/** 从 Markdown 文件读取 Master Skills 规范 */
+const MASTER_SKILLS_PROMPT = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf-8').trim()
+
+/** 系统提示词（基础规则 + Master Skills） */
+const SYSTEM_PROMPT = `# Role
+你是一个高级程序员，擅长开发工具与游戏。
+
+# Execution Rules (优先级)
+1. **意图识别**：若用户只是闲聊或提问，忽略项目背景直接回答。
+2. **开发流程**：写代码前必须先调用 ListDir/ReadFile 查看项目结构和文件内容。
+3. **技术栈**：Vant (组件优先) + Tailwind CSS (布局优先)。
+4. **路径规则**：必须使用提供的「项目Path」作为根目录，read/write 使用相对路径。
+
+# Expertise Integration
+在编写任何 UI 或逻辑代码时，必须严格遵循以下 [Master Skills] 规范，以确保产品具备顶级的视觉审美和交互体验。
+
+${MASTER_SKILLS_PROMPT}`
 
 export const message = [
   { role: "system", content: SYSTEM_PROMPT },
