@@ -213,7 +213,7 @@ export const updateProjectTemplateVersion = async (projectId,upToVersion,user) =
   }
   const [result2] = await connection.query(
     'UPDATE projects SET temp_version = ? WHERE id = ?',
-    [latestVersion.version, projectId]
+    [upToVersion, projectId]
   );
   if (result2.affectedRows !== 1) throw new Error('更新项目模板版本失败');
   return {content: '项目模板更新成功',affectedRows:result2.affectedRows};
