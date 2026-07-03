@@ -42,14 +42,35 @@ function countContextTokens(context) {
   return total
 }
 
-/** 系统提示词文件路径 */
+/** 本地默认系统提示词文件路径 */
 const SYSTEM_PROMPT_PATH = fileURLToPath(new URL('./system-prompt.md', import.meta.url))
 
-/** 从 Markdown 文件读取 Master Skills 规范 */
-const MASTER_SKILLS_PROMPT = fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf-8').trim()
+/** 项目内 Master Skills 相对路径 */
+const PROJECT_SKILLS_REL_PATH = path.join('agent_base', 'skills', 'system-prompt.md')
 
-/** 系统提示词（基础规则 + Master Skills） */
-const SYSTEM_PROMPT = `# Role
+/**
+ * 读取 Master Skills 规范：优先项目 agent_base/skills/system-prompt.md，不存在则用本地默认
+ * @param {string} [projectDirPath] 项目根目录
+ * @returns {string}
+ */
+function getMasterSkillsPrompt(projectDirPath) {
+  if (projectDirPath) {
+    const projectSkillsPath = path.join(projectDirPath, PROJECT_SKILLS_REL_PATH)
+    if (fs.existsSync(projectSkillsPath)) {
+      return fs.readFileSync(projectSkillsPath, 'utf-8').trim()
+    }
+  }
+  return fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf-8').trim()
+}
+
+/**
+ * 构建完整系统提示词
+ * @param {string} [projectDirPath] 项目根目录
+ * @returns {string}
+ */
+function buildSystemPrompt(projectDirPath) {
+  const masterSkillsPrompt = getMasterSkillsPrompt(projectDirPath)
+  return `# Role
 你是一个高级程序员，擅长使用前端技术栈开发项目涉及到canvas游戏与网页工具并具备良好的审美和交互体验。
 
 # Execution Rules (优先级)
@@ -58,10 +79,17 @@ const SYSTEM_PROMPT = `# Role
 3. **技术栈**：Vant (组件优先) + Tailwind CSS (布局优先 flex/grid)。
 4. **路径规则**：必须使用提供的「项目Path」作为根目录，read/write 使用相对路径。
 
+# Disable Change
+禁止修改项目下的agent_base项目底座下的所有文件，新增删除修改都不允许。当用户指定修改agent_base项目底座下的文件时，提示没有权限进行修改。
+
 # Expertise Integration
 在编写任何 UI 或逻辑代码时，必须严格遵循以下 [Master Skills] 规范，以确保产品具备顶级的视觉审美和交互体验。
 
-${MASTER_SKILLS_PROMPT}`
+${masterSkillsPrompt}`
+}
+
+/** 系统提示词（基础规则 + Master Skills，无项目目录时使用本地默认） */
+const SYSTEM_PROMPT = buildSystemPrompt()
 
 export const message = [
   { role: "system", content: SYSTEM_PROMPT },
@@ -146,6 +174,11 @@ function mergeToolCallDeltas(toolCallsMap, deltaToolCalls) {
  * @param {string} projectDirPath 后台项目根目录，工具执行时强制使用
  */
 export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(msg)}, context=message, projectDirPath="") {
+  // 每次对话根据项目目录刷新 Master Skills（优先读项目 agent_base/skills/system-prompt.md）
+  if (context.length > 0 && context[0].role === 'system') {
+    context[0].content = buildSystemPrompt(projectDirPath)
+  }
+
   const toolCallsMap = {}
   let finishReason = null
   if(userMessage) context.push({role: "user", content: userMessage})

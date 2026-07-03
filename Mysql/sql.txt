@@ -24,6 +24,7 @@ create TABLE projects(
 alter table projects add column link varchar(100) comment '线上地址';
 alter table projects add column current_vision int comment '当前线上版本ID';
 alter table projects add column cloudflare_id varchar(50) comment 'cloudflareId 删除线上版本';
+alter table projects add column temp_version varchar(50) default '1.0.0' comment '项目模板版本号';
 
 // 建立索引的两种方式 ===========================================================
 写法一：ALTER TABLE（常用）
@@ -85,3 +86,5 @@ create table snapshots(
 )comment '快照表' auto_increment = 1000;
 
 CREATE INDEX idx_snapshots_project_version ON snapshots (project_id, version);
+alter table snapshots add column type int default 0 comment '快照类型(0：用户快照,1：版本升级前快照)';
+alter table snapshots add column temp_version varchar(20) default '1.0.0' comment '快照模板版本';
