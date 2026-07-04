@@ -88,3 +88,18 @@ create table snapshots(
 CREATE INDEX idx_snapshots_project_version ON snapshots (project_id, version);
 alter table snapshots add column type int default 0 comment '快照类型(0：用户快照,1：版本升级前快照)';
 alter table snapshots add column temp_version varchar(20) default '1.0.0' comment '快照模板版本';
+
+// 双 Token 认证：Refresh Token 表 ===========================================================
+USE gameAgent;
+
+create table refresh_tokens(
+    id INT primary key auto_increment comment '主键',
+    user_id INT not null comment '用户ID',
+    token_hash VARCHAR(64) not null comment 'refresh token 的 SHA256 哈希',
+    expires_at TIMESTAMP not null comment '过期时间',
+    revoked TINYINT default 0 comment '是否已吊销(0否1是)',
+    created_at TIMESTAMP default CURRENT_TIMESTAMP comment '创建时间'
+)comment '刷新令牌表';
+
+CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens (user_id);
+CREATE INDEX idx_refresh_tokens_hash ON refresh_tokens (token_hash);

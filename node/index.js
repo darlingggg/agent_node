@@ -2,7 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import resCC from './middleware/resCC.js';
 import authJWT from './middleware/authJWT.js';
-import { register, login } from './auth/index.js';
+import { register, login, refreshAccessToken, logout } from './auth/index.js';
 import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta } from './file/index.js';
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject,
   getLatestTemplateVersion,getCurrentProjectTemplateVersion,updateProjectTemplateVersion,getAllTemplateVersionFiles } from './project/index.js';
@@ -61,6 +61,28 @@ app.post('/login', async (req, res) => {
     const { account, password } = req.body;
     const result = await login(account, password);
     res.cc(0, '登录成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 刷新 Access Token */
+app.post('/auth/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    const result = await refreshAccessToken(refreshToken);
+    res.cc(0, '刷新成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 用户登出 */
+app.post('/auth/logout', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    await logout(refreshToken);
+    res.cc(0, '登出成功');
   } catch (err) {
     res.cc(1, err.message);
   }
