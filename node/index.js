@@ -2,9 +2,10 @@ import express from 'express';
 import cors from 'cors';
 import resCC from './middleware/resCC.js';
 import authJWT from './middleware/authJWT.js';
-import { register, login } from './auth/index.js';
+import { register, login, refreshAccessToken, logout } from './auth/index.js';
 import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta } from './file/index.js';
-import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject } from './project/index.js';
+import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject,
+  getLatestTemplateVersion,getCurrentProjectTemplateVersion,updateProjectTemplateVersion,getAllTemplateVersionFiles } from './project/index.js';
 import { createSession, getSessionList,updateSession,deleteSession,getSessionDetail } from './session/index.js';
 import { addLog, getLogList } from './log/index.js';
 import { chat, keepContext,message } from './openai/index.js';
@@ -60,6 +61,28 @@ app.post('/login', async (req, res) => {
     const { account, password } = req.body;
     const result = await login(account, password);
     res.cc(0, '登录成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 刷新 Access Token */
+app.post('/auth/refresh', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    const result = await refreshAccessToken(refreshToken);
+    res.cc(0, '刷新成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 用户登出 */
+app.post('/auth/logout', async (req, res) => {
+  try {
+    const { refreshToken } = req.body;
+    await logout(refreshToken);
+    res.cc(0, '登出成功');
   } catch (err) {
     res.cc(1, err.message);
   }
@@ -392,12 +415,9 @@ app.patch('/snapshot/change',authJWT, async (req, res) => {
 
 /** 构建并部署项目 */
 app.post('/project/build',authJWT,async(req,res)=>{
-  const { dir,projectId } = req.body;
+  const { dir,projectId} = req.body;
   if(!dir) return res.cc(1, '项目根目录不能为空');
   if(!projectId) return res.cc(1, '项目id不能为空');
-
-  const snapshotNum = await getSnapshotNum(projectId,req.user);
-  if(snapshotNum >= 5) return res.cc(1, '快照数量不能超过5个，请删除旧版本快照');
 
   res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
   res.setHeader('Cache-Control', 'no-cache')
@@ -440,6 +460,50 @@ app.get('/project/version',authJWT,async(req,res)=>{
   if(!projectId) return res.cc(1, '项目id不能为空');
   try {
     const result = await getCurrentVision(projectId);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
+/** 获取最新的模板版本 */
+app.get('/temp/latest',async(_,res)=>{
+  try {
+    const result = await getLatestTemplateVersion();
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
+/** 获取项目当前的模板版本 */
+app.get('/temp/current',authJWT,async(req,res)=>{
+  const { projectId } = req.query;
+  if(!projectId) return res.cc(1, '项目id不能为空');
+  try {
+    const result = await getCurrentProjectTemplateVersion(projectId);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
+/** 更新项目模板版本 */
+app.post('/temp/update',authJWT,async(req,res)=>{
+  const { projectId,upToVersion = null } = req.body;
+  if(!projectId) return res.cc(1, '项目id不能为空');
+  try {
+    const result = await updateProjectTemplateVersion(projectId,upToVersion,req.user);
+    res.cc(0, '更新成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+})
+
+/** 获取项目模板版本列表 */
+app.get('/temp/list',async(_,res)=>{
+  try {
+    const result = await getAllTemplateVersionFiles();
     res.cc(0, '获取成功', result);
   } catch (err) {
     res.cc(1, err.message);

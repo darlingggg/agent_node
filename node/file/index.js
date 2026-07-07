@@ -17,6 +17,7 @@ const IGNORED_DIRS = new Set([
   'logs',
   '__screenshots__',
   '.vscode',
+  'versions'
 ]);
 
 /** 需要跳过的文件名 */
@@ -30,6 +31,7 @@ const IGNORED_FILES = new Set([
   '.gitignore',
   '.npmrc',
   'README.md',
+  "version.json"
 ]);
 
 /** 需要跳过的文件后缀 */
@@ -123,6 +125,17 @@ function assertWithinRoot(fullPath, rootDir) {
 function isUnderSrc(fullPath, rootDir) {
   const relative = path.relative(rootDir, fullPath);
   return relative === 'src' || relative.startsWith(`src${path.sep}`);
+}
+
+/**
+ * 判断路径是否在 agent_base 目录下
+ * @param {string} fullPath 绝对路径
+ * @param {string} rootDir 项目根目录
+ * @returns {boolean}
+ */
+function isUnderAgentBase(fullPath, rootDir) {
+  const relative = path.relative(rootDir, fullPath);
+  return relative === 'agent_base' || relative.startsWith(`agent_base${path.sep}`);
 }
 
 /**
@@ -234,16 +247,21 @@ export async function getFileContent(filePath, dir) {
 
 /**
  * 写入文件内容，文件已存在则覆盖
- * src 目录下支持自动创建父目录，其他目录仅允许在已有目录中创建文件
  * @param {string} filePath 文件路径
  * @param {string} content 文件内容
  * @param {string} [dir] 项目根目录，默认 PROJECT_TEMP_ROOT
+ * @param {boolean} [judgeSrc=true] 为 true 时禁止修改 agent_base，且仅 src 下自动创建父目录；为 false 时不限制（供系统模板更新使用）
  * @returns {Promise<{path: string, relativePath: string, dir: string}>}
  */
-export async function writeFileContent(filePath, content = '', dir) {
+export async function writeFileContent(filePath, content = '', dir, judgeSrc = true) {
   const rootDir = resolveRootDir(dir);
   const fullPath = resolveTargetPath(filePath, rootDir);
   assertWithinRoot(fullPath, rootDir);
+
+  // judgeSrc 为 true 时禁止修改 agent_base 底座文件（系统模板更新传 false 可绕过）
+  if (judgeSrc && isUnderAgentBase(fullPath, rootDir)) {
+    throw new Error('不允许修改 agent_base 项目底座下的文件');
+  }
 
   try {
     const stat = await fs.stat(fullPath);
@@ -269,7 +287,8 @@ export async function writeFileContent(filePath, content = '', dir) {
   }
 
   if (!parentExists) {
-    if (isUnderSrc(fullPath, rootDir)) {
+    // judgeSrc 为 true 时，仅 src 目录下允许自动创建；为 false 时任意路径均可创建
+    if (!judgeSrc || isUnderSrc(fullPath, rootDir)) {
       await fs.mkdir(parentDir, { recursive: true });
     } else {
       throw new Error('父目录不存在，仅 src 目录下支持自动创建目录');

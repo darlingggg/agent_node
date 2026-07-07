@@ -1,4 +1,6 @@
+import fs from 'fs'
 import path from 'path'
+import { fileURLToPath } from 'url'
 import OpenAI from 'openai'
 import { encodingForModel } from 'js-tiktoken'
 import { baseURL, key } from '../../key.js'
@@ -40,22 +42,54 @@ function countContextTokens(context) {
   return total
 }
 
-const SYSTEM_PROMPT = `【角色设定】
-你是一个高级的程序员，擅长使用前端技术栈开发工具与游戏，你可以根据用户的需求，返回符合用户预期的内容。在开发之前先查看目录结构并查看所需文件内容之后再进行开发。
+/** 本地默认系统提示词文件路径 */
+const SYSTEM_PROMPT_PATH = fileURLToPath(new URL('./system-prompt.md', import.meta.url))
 
-【执行优先级】
-1. 始终以「用户最新消息」为唯一决策依据，先理解用户想做什么，再决定下一步
-2. 若用户只是闲聊、提问、与项目无关，忽略项目背景，直接回答用户问题
-3. 开发前先查看目录结构和相关文件内容，再动手写代码
+/** 项目内 Master Skills 相对路径 */
+const PROJECT_SKILLS_REL_PATH = path.join('agent_base', 'skills', 'system-prompt.md')
 
-【技术栈规范】
-1. 组件库优先使用 Vant，能用 Vant 组件实现的 UI 不要手写原生或引入其他组件库
-2. 2. CSS 样式选用 Tailwind CSS 工具类，可以使用原生的css，哪个效果好就使用哪个，优先使用flex，grid布局
+/**
+ * 读取 Master Skills 规范：优先项目 agent_base/skills/system-prompt.md，不存在则用本地默认
+ * @param {string} [projectDirPath] 项目根目录
+ * @returns {string}
+ */
+function getMasterSkillsPrompt(projectDirPath) {
+  if (projectDirPath) {
+    const projectSkillsPath = path.join(projectDirPath, PROJECT_SKILLS_REL_PATH)
+    if (fs.existsSync(projectSkillsPath)) {
+      return fs.readFileSync(projectSkillsPath, 'utf-8').trim()
+    }
+  }
+  return fs.readFileSync(SYSTEM_PROMPT_PATH, 'utf-8').trim()
+}
 
-【项目路径规则】
-1. 操作项目文件时，必须使用消息中提供的「项目Path」作为项目根目录
-2. 禁止自行猜测、编造或替换项目路径
-3. read/write 文件时 path 参数使用相对路径（如 src/App.vue），不要编造绝对路径`
+/**
+ * 构建完整系统提示词
+ * @param {string} [projectDirPath] 项目根目录
+ * @returns {string}
+ */
+function buildSystemPrompt(projectDirPath) {
+  const masterSkillsPrompt = getMasterSkillsPrompt(projectDirPath)
+  return `# Role
+你是一个高级程序员，擅长使用前端技术栈开发项目涉及到canvas游戏与网页工具并具备良好的审美和交互体验。
+
+# Execution Rules (优先级)
+1. **意图识别**：若用户只是闲聊或提问，忽略项目背景直接回答。
+2. **开发流程**：写代码前必须先调用 ListDir/ReadFile 查看项目结构和文件内容。
+3. **技术栈**：Vant (组件优先) + Tailwind CSS (布局优先 flex/grid)。
+4. **路径规则**：必须使用提供的「项目Path」作为根目录，read/write 使用相对路径。
+
+# Disable Change
+禁止修改项目下的agent_base项目底座下的所有文件，新增删除修改都不允许。当用户指定修改agent_base项目底座下的文件时，提示没有权限进行修改。
+
+# Expertise Integration
+在编写任何 UI 或逻辑代码时，必须严格遵循以下 [Master Skills] 规范，以确保产品具备顶级的视觉审美和交互体验。
+
+${masterSkillsPrompt}`
+}
+
+/** 系统提示词（基础规则 + Master Skills，无项目目录时使用本地默认） */
+const SYSTEM_PROMPT = buildSystemPrompt()
 
 export const message = [
   { role: "system", content: SYSTEM_PROMPT },
@@ -140,6 +174,11 @@ function mergeToolCallDeltas(toolCallsMap, deltaToolCalls) {
  * @param {string} projectDirPath 后台项目根目录，工具执行时强制使用
  */
 export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(msg)}, context=message, projectDirPath="") {
+  // 每次对话根据项目目录刷新 Master Skills（优先读项目 agent_base/skills/system-prompt.md）
+  if (context.length > 0 && context[0].role === 'system') {
+    context[0].content = buildSystemPrompt(projectDirPath)
+  }
+
   const toolCallsMap = {}
   let finishReason = null
   if(userMessage) context.push({role: "user", content: userMessage})

@@ -1,9 +1,11 @@
-import { copyDir, deleteDir, updateProjectIndexHtml } from '../file/index.js';
+import { copyDir, deleteDir, updateProjectIndexHtml,getFileContent,writeFileContent,deleteFileContent } from '../file/index.js';
 import { markProjectSessionsDeleted } from '../session/index.js';
+import { addSnapshot } from '../snapshot/index.js';
 import connection from '../../Mysql/index.js';
-
+import fs from 'fs/promises';
+import path from 'path';
 // const rootDir = '/www/wwwroot/ai_agent';
-// const rootDir = 'C:/pro_server';
+// const rootDir = 'C:/pro_self';
 const rootDir = 'C:/ai';
 const sourceDir = rootDir + '/projectTemp';
 
@@ -14,8 +16,8 @@ export const createProject = async (user, body) => {
   const { dirPath } = await copyDir(sourceDir, targetDir);
   await updateProjectIndexHtml(dirPath, body.title, body.desc);
   const [result] = await connection.query(
-    'INSERT INTO projects (account, dir_path, title, `desc`) VALUES (?, ?, ?, ?)',
-    [user.account, dirPath, body.title, body.desc]
+    'INSERT INTO projects (account, dir_path, title, `desc`,temp_version) VALUES (?, ?, ?, ?,?)',
+    [user.account, dirPath, body.title, body.desc,(await getLatestTemplateVersion()).version]
   );
   if (result.affectedRows !== 1) {
     throw new Error('创建项目失败，请稍后重试');
@@ -71,10 +73,18 @@ export const updateProject = async (body,user) => {
   if (rows.length === 0) throw new Error('项目不存在');
   const dirPath = rows[0].dir_path;
   await updateProjectIndexHtml(dirPath, body.title, body.desc ?? "");
-  const [result] = await connection.query(
+
+  let result = null
+  if(!body.tempVersion)
+  [result] = await connection.query(
     'UPDATE projects SET title = ?, `desc` = ? WHERE id = ? AND account = ?',
     [body.title, body.desc ?? "", body.id, user.account]
   );
+  else [result] = await connection.query(
+    'UPDATE projects SET title = ?, `desc` = ?, temp_version = ? WHERE id = ? AND account = ?',
+    [body.title, body.desc ?? "", body.tempVersion, body.id, user.account]
+  );
+
   if (result.affectedRows !== 1) {
     throw new Error('修改项目失败，请稍后重试');
   }
@@ -91,4 +101,120 @@ export const buildProject = async (projectId,link,visionId,deploymentId) => {
     throw new Error('构建项目失败，更新数据库失败');
   }
   return {content: '构建成功'};
+}
+
+/**
+ * 比较两个 semver 版本号
+ * @param {string} a 版本号 a
+ * @param {string} b 版本号 b
+ * @returns {number} 1 表示 a > b，-1 表示 a < b，0 表示相等
+ */
+function compareVersion(a, b) {
+  const pa = a.split('.').map(Number);
+  const pb = b.split('.').map(Number);
+  for (let i = 0; i < 3; i++) {
+    if (pa[i] > pb[i]) return 1;
+    if (pa[i] < pb[i]) return -1;
+  }
+  return 0;
+}
+
+/**
+ * 获取模板 versions 目录下的所有版本文件（按版本号升序）
+ * @returns {Promise<Array<{ version: string, fileName: string, filePath: string, content: object }>>}
+ */
+export const getAllTemplateVersionFiles = async () => {
+  const versionsDir = path.join(sourceDir, 'agent_base', 'versions');
+  const files = await fs.readdir(versionsDir);
+  const jsonFiles = files.filter((name) => name.endsWith('.json'));
+
+  const result = [];
+  for (const fileName of jsonFiles) {
+    const filePath = path.join(versionsDir, fileName);
+    const fileContent = await fs.readFile(filePath, 'utf-8');
+    const content = JSON.parse(fileContent);
+    result.push({
+      version: fileName.replace('.json', ''),
+      fileName,
+      filePath,
+      content,
+    });
+  }
+
+  result.sort((a, b) => compareVersion(a.version, b.version));
+  return result;
+};
+
+/**
+ * 获取 (fromVersion, toVersion] 区间内的版本文件（左开右闭）
+ * @param {string} fromVersion 起始版本（不含）
+ * @param {string} toVersion 结束版本（含）
+ * @returns {Promise<Array<{ version: string, fileName: string, filePath: string, content: object }>>}
+ */
+export const getTemplateVersionFilesBetween = async (fromVersion, toVersion) => {
+  if (compareVersion(fromVersion, toVersion) >= 0) {
+    throw new Error('起始版本必须小于结束版本');
+  }
+
+  const allVersions = await getAllTemplateVersionFiles();
+  return allVersions.filter(
+    (item) => compareVersion(item.version, fromVersion) > 0 && compareVersion(item.version, toVersion) <= 0
+  );
+};
+
+/** 获取项目最新的模板版本 */
+export const getLatestTemplateVersion = async () => {
+  const versionPath = path.join(sourceDir,'agent_base','version.json');
+  const file = await getFileContent(versionPath,rootDir);
+  const version = JSON.parse(file).version;
+  return {version,fileContent:file};
+}
+
+/** 获取当前项目的模板版本 */
+export const getCurrentProjectTemplateVersion = async (projectId) => {
+  const [rows] = await connection.query(
+    'SELECT temp_version FROM projects WHERE id = ?',
+    [projectId]
+  );
+  return {version:rows[0].temp_version};
+}
+
+/** 更新项目模板版本 */
+export const updateProjectTemplateVersion = async (projectId,upToVersion,user) => {
+  const latestVersion = await getLatestTemplateVersion();
+  const currentVision = await getCurrentProjectTemplateVersion(projectId);
+  if(!upToVersion) upToVersion = latestVersion.version;
+  if(upToVersion === currentVision.version) return {content: '当前模板版本已是最新,无需更新',affectedRows:0};
+
+  const betweenVersionFiles = await getTemplateVersionFilesBetween(currentVision.version, upToVersion);
+  const [result] = await connection.query('select dir_path from projects where id = ?',[projectId]);
+  const dirPath = result[0].dir_path;
+
+  // 添加快照
+  await addSnapshot(projectId,Math.random().toString(36).substring(2, 15)+'_'+upToVersion,dirPath,`更新项目模板版本到${upToVersion}`,user,1);
+
+  for(let file of betweenVersionFiles){
+    const files = file.content.files;
+    for(let file of files){
+      const filePath = path.join(sourceDir,file.path);
+      const fileContent = await getFileContent(filePath,sourceDir);
+      const targetPath = path.join(dirPath,file.path);
+      const action = file.action;
+
+      if(action === 'add' || action === 'update'){
+        await writeFileContent(targetPath,fileContent,dirPath,false);
+      }else if(action === 'delete'){
+        const stat = await fs.stat(filePath)
+        if(stat.isDirectory()) await deleteDir(filePath)
+        else await deleteFileContent(targetPath,dirPath)
+      }
+    }
+
+  }
+  const [result2] = await connection.query(
+    'UPDATE projects SET temp_version = ? WHERE id = ?',
+    [upToVersion, projectId]
+  );
+  if (result2.affectedRows !== 1) throw new Error('更新项目模板版本失败');
+  return {content: '项目模板更新成功',affectedRows:result2.affectedRows};
 }
