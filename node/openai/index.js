@@ -6,6 +6,7 @@ import { encodingForModel } from 'js-tiktoken'
 import { baseURL, key } from '../../key.js'
 import { tools, functionMap } from './tools.js'
 import connection from '../../Mysql/index.js';
+import { describeImage } from './image.js'
 
 const client = new OpenAI({
     apiKey: key,
@@ -95,12 +96,6 @@ export const message = [
   { role: "system", content: SYSTEM_PROMPT },
 ]
 
-function resetMessage() {
-  message = [
-    { role: "system", content: SYSTEM_PROMPT },
-  ]
-}
-
 /**
  * 将工具参数绑定到后台项目根目录，避免 AI 编造错误路径
  * @param {string} name 工具名称
@@ -173,16 +168,25 @@ function mergeToolCallDeltas(toolCallsMap, deltaToolCalls) {
  * @param {Array} context 对话上下文
  * @param {string} projectDirPath 后台项目根目录，工具执行时强制使用
  */
-export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(msg)}, context=message, projectDirPath="") {
-  // 每次对话根据项目目录刷新 Master Skills（优先读项目 agent_base/skills/system-prompt.md）
-  if (context.length > 0 && context[0].role === 'system') {
-    context[0].content = buildSystemPrompt(projectDirPath)
+export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(msg)}, context=message, projectDirPath="", imageUrls=[], prompt="") {
+  let ImageResponse = ""
+  if (context.length > 0 && context[0].role === 'system') context[0].content = buildSystemPrompt(projectDirPath)
+
+  if (Array.isArray(imageUrls) && imageUrls.length > 0) {
+    onEvent({ event: 'vision_start', data: null })
+    const result = await describeImage(prompt || userMessage, imageUrls, onEvent)
+    ImageResponse = result?.response ?? ""
+    if (ImageResponse) onEvent({ event: 'vision_done', data: ImageResponse })
   }
 
   const toolCallsMap = {}
-  let finishReason = null
-  if(userMessage) context.push({role: "user", content: userMessage})
-  
+  let assistantText = ""
+
+  if (userMessage) {
+    const content = ImageResponse ? `【视觉分析】\n${ImageResponse}\n\n${prompt}` : prompt
+    context.push({ role: "user", content })
+  }
+
   const stream = await client.chat.completions.create({
     model: "deepseek-v4-pro",
     messages: context,
@@ -194,9 +198,11 @@ export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(
   for await (let chunk of stream) {
     const delta = chunk.choices[0].delta
 
-    if (delta.content) onEvent({event: 'text', data: delta.content})
+    if (delta.content) {
+      assistantText += delta.content
+      onEvent({ event: 'text', data: delta.content })
+    }
     if (delta.tool_calls) mergeToolCallDeltas(toolCallsMap, delta.tool_calls)
-    if (chunk.choices[0]?.finish_reason) finishReason = chunk.choices[0].finish_reason
   }
 
   const toolCalls = Object.keys(toolCallsMap)
@@ -204,7 +210,7 @@ export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(
     .map((key) => toolCallsMap[key])
 
   if (toolCalls.length > 0) {
-    context.push({role: "assistant", content: null, tool_calls: toolCalls})
+    context.push({ role: "assistant", content: assistantText || null, tool_calls: toolCalls })
     for (const toolCall of toolCalls) {
       const id = toolCall.id
       const name = toolCall.function.name
@@ -213,13 +219,14 @@ export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(
       const keys = Object.keys(originArgs)
       for (const key of keys) args[key] = originArgs[key]
       const boundArgs = bindProjectDirPath(name, args, projectDirPath)
-      onEvent({event: 'tool_start', data: `正在执行工具: ${name} $$ 参数: ${JSON.stringify(boundArgs)}`})
+      onEvent({ event: 'tool_start', data: `正在执行工具: ${name} $$ 参数: ${JSON.stringify(boundArgs)}` })
       const result = await functionMap[name](boundArgs)
-      context.push({role: "tool", content: result, tool_call_id: id})
-      onEvent({event: 'tool_end', data: `工具执行完毕: ${name} $$ 结果: ${result}`})
+      context.push({ role: "tool", content: result, tool_call_id: id })
+      onEvent({ event: 'tool_end', data: `工具执行完毕: ${name} $$ 结果: ${result}` })
     }
-    await chat("", onEvent, context, projectDirPath)
-  } else {
+    await chat("", onEvent, context, projectDirPath, [], prompt)
+  } else if (assistantText) {
+    context.push({ role: "assistant", content: assistantText })
     const tokenCount = countContextTokens(context)
     console.log(`[上下文] 当前 token 数: ${tokenCount}，消息条数: ${context.length}`)
   }

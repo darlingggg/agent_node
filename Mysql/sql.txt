@@ -53,7 +53,7 @@ create table sessions(
     project_id INT not null comment '关联项目id',
     title varchar(50) comment '会话标题',
     account varchar(50) NOT NULL comment '用户账号',
-    role varchar(20) NOT NULL comment '角色类型(用户/ai)',
+    role varchar(20) NOT NULL comment '角色类型(用户/ai/vision)',
     content text comment '当前会话内容',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP comment '创建时间'
 )comment '会话表';

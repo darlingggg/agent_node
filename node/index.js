@@ -278,7 +278,7 @@ app.get('/session/detail',authJWT, async (req, res) => {
 
 /** 与AI对话（SSE 流式） */
 app.post('/chat/stream', authJWT, async (req, res) => {
-  const { prompt, projectId,title } = req.body
+  const { prompt, projectId,title,imageUrls=[] } = req.body
   if (!prompt) return res.cc(1, '发送消息为空')
   if (!projectId) return res.cc(1, '操作项目为空')
 
@@ -304,15 +304,17 @@ app.post('/chat/stream', authJWT, async (req, res) => {
     if (res.writableEnded) return
     clientClosed = true
   })
+  
+  const contextKey = `${req.user.account}-${projectId}-${title}`
   let context = [...message]
-  if(title && !contextMap.has(`${req.user.account}-${projectId}-${title}`)){
-    const {result,length} = await keepContext(req.user.account,projectId,title);
-    context = context.concat(result.map(item => ({role: item.role, content: item.content})));
-    if(length > 0) contextMap.set(`${req.user.account}-${projectId}-${title}`,context);
-  }else if(title && contextMap.has(`${req.user.account}-${projectId}-${title}`)){
-    context = context.concat(contextMap.get(`${req.user.account}-${projectId}-${title}`));
-  }else{
-    contextMap.set(`${req.user.account}-${projectId}-${title}`,context);
+
+  if (title && !contextMap.has(contextKey)) {
+    const { result } = await keepContext(req.user.account, projectId, title)
+    const history = result.map(item => ({ role: item.role==="vision"?"user":item.role, content: item.content }))
+    context = context.concat(history)
+    contextMap.set(contextKey, history)
+  } else if (title && contextMap.has(contextKey)) {
+    context = context.concat(contextMap.get(contextKey))
   }
 
   try {
@@ -321,7 +323,13 @@ app.post('/chat/stream', authJWT, async (req, res) => {
     const projectTitle = projectInfo.title ?? ""
     const desc = projectInfo.desc ?? ""
     const content = `【用户指令 - 最高优先级，请以此为准】\n${prompt}\n\n【项目背景 - 操作文件时使用】\n项目标题: ${projectTitle}\n项目描述: ${desc}\n项目Path: ${dirPath}\n组件库: vant\nCSS: tailwindcss\n\n注: 所有文件操作必须使用上述项目Path，path 参数用相对路径；看项目效果只需提示用户刷新页面`
-    await chat(content, send, context, dirPath)
+    await chat(content, send, context, dirPath, imageUrls, prompt)
+
+    // 同步更新内存上下文（不含 system，避免重复拼接）
+    if (title) {
+      contextMap.set(contextKey, context.filter(msg => msg.role !== 'system'))
+    }
+
     if (clientClosed) return
 
     send({ event: 'done', data: null })

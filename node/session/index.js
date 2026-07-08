@@ -28,7 +28,7 @@ export const createSession = async (body, user) => {
   const [res] = await connection.query('select * from projects where id = ?', [projectId]);
   if(res.length === 0) throw new Error('项目不存在');
 
-  if(role === 'assistant') {
+  if(role === 'assistant' || role === 'vision') {
     const [res1] = await connection.query(
       'insert into messages (content) values (?)',
       [content]
