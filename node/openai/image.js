@@ -4,7 +4,7 @@ import { imageKey, imageBaseURL } from '../../key.js'
 /** 是否开启思考过程 */
 const ENABLE_THINKING = true
 /** 思考过程最大 token 数（多图场景预留更充裕的推理空间） */
-const THINKING_BUDGET = 512
+const THINKING_BUDGET = 768
 /** 正式回复最大 token 数 */
 const MAX_TOKENS = 1024
 
@@ -54,18 +54,14 @@ export async function describeImage(prompt, imageUrls,onEvent=(msg)=>{process.st
     const contentParts = []
     let isAnswering = false
 
-    if (ENABLE_THINKING) {
-      console.log('\n' + '='.repeat(20) + '思考过程' + '='.repeat(20) + '\n')
-    }
-
     for await (const chunk of stream) {
       if (!chunk.choices?.length) {
-        if (chunk.usage) {
-          console.log('\n--- 请求用量 ---')
-          console.log(`输入 Tokens: ${chunk.usage.prompt_tokens}`)
-          console.log(`输出 Tokens: ${chunk.usage.completion_tokens}`)
-          console.log(`总计 Tokens: ${chunk.usage.total_tokens}`)
-        }
+        // if (chunk.usage) {
+        //   console.log('\n--- 请求用量 ---')
+        //   console.log(`输入 Tokens: ${chunk.usage.prompt_tokens}`)
+        //   console.log(`输出 Tokens: ${chunk.usage.completion_tokens}`)
+        //   console.log(`总计 Tokens: ${chunk.usage.total_tokens}`)
+        // }
         continue
       }
 
@@ -79,7 +75,6 @@ export async function describeImage(prompt, imageUrls,onEvent=(msg)=>{process.st
       // 正式回复（content）
       else if (delta.content) {
         if (!isAnswering) {
-          console.log('\n' + '='.repeat(20) + '正式回复' + '='.repeat(20) + '\n')
           isAnswering = true
         }
         onEvent({event: 'visual_answer', data: delta.content})
