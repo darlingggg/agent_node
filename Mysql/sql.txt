@@ -103,3 +103,12 @@ create table refresh_tokens(
 
 CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens (user_id);
 CREATE INDEX idx_refresh_tokens_hash ON refresh_tokens (token_hash);
+
+-- AI 流式消息后端托管保存：执行前请先确认字段不存在
+ALTER TABLE sessions
+  ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'completed' COMMENT '消息状态: completed/streaming/failed',
+  ADD COLUMN error_msg TEXT NULL COMMENT 'AI生成失败信息',
+  ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间';
+
+CREATE INDEX idx_sessions_message_id ON sessions (message_id);
+CREATE INDEX idx_sessions_status ON sessions (status);
