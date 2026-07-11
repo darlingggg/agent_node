@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node node/index.js",
+    "start": "PORT=5000 node node/index.js",
     "dev": "nodemon --watch node --watch file --watch Mysql node/index.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },

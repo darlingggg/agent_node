@@ -16,7 +16,7 @@ import { buildCommand,deleteOnlineVersion } from './exec/index.js';
 import { getCredential } from './cos/index.js';
 
 /** 默认服务端口 */
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 // const PORT = 5000;
 
 /** 创建 Express 应用实例 */
