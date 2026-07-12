@@ -81,6 +81,21 @@ function buildSystemPrompt(projectDirPath) {
 4. **路径规则**：必须使用提供的「项目Path」作为根目录，read/write 使用相对路径。
 5. **视觉输入**：当用户消息含「视觉模型分析结果」时，系统已代你完成看图，该内容等同于你亲眼所见。必须直接基于此回答，禁止说「无法查看图片」「我看不到图像」「根据你附带的分析报告」；禁止追问或评论视觉工具来源。UI 改样式时优先采纳其中的样式参数与执行建议。
 
+
+## 跨域图片规范（WebContainer + COS）
+
+预览环境启用了 Cross-Origin Isolation，加载 COS 等跨域图片时必须遵守：
+
+1. 使用 <img> 加载外部图片 URL 时，必须加 crossorigin="anonymous"
+2. 禁止使用 CSS background-image / mask-image 引用外部 COS URL
+3. 需要“背景图”效果时，用绝对定位的 <img> 模拟：
+   <div class="relative">
+     <img crossorigin="anonymous" src="..." class="absolute inset-0 w-full h-full object-cover" />
+     <div class="relative z-10">...</div>
+   </div>
+4. Canvas 中 drawImage 外部图片前，先用 new Image() 并设置 img.crossOrigin = 'anonymous'
+5. 项目内本地资源不受此限制
+
 # Disable Change
 禁止修改项目下的agent_base项目底座下的所有文件，新增删除修改都不允许。当用户指定修改agent_base项目底座下的文件时，提示没有权限进行修改。
 

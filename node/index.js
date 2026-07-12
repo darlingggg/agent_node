@@ -450,23 +450,24 @@ app.post('/chat/stream/legacy-unused', authJWT, async (req, res) => {
 
 /** 添加日志 */
 app.post('/log/add',authJWT, async (req, res) => {
-  const { content, projectId } = req.body;
+  const { content, projectId, title } = req.body;
   if(!content) return res.cc(1, '日志内容不能为空');
   if(!projectId) return res.cc(1, '项目id不能为空');
+  if(!title) return res.cc(1, '会话标题不能为空');
   try {
-    const result = await addLog(content, projectId, req.user);
+    const result = await addLog(content, projectId, title, req.user);
     res.cc(0, '添加成功', result);
   } catch (err) {
     res.cc(1, err.message);
   }
 })
 
-/** 获取日志列表 */
+/** 获取日志列表，title 可选，传入时按会话过滤 */
 app.get('/log/list',authJWT, async (req, res) => {
-  const { projectId } = req.query;
+  const { projectId, title } = req.query;
   if(!projectId) return res.cc(1, '项目id不能为空');
   try {
-    const result = await getLogList(projectId, req.user);
+    const result = await getLogList(projectId, title ? title : undefined, req.user);
     res.cc(0, '获取成功', result);
   } catch (err) {
     res.cc(1, err.message);
