@@ -125,7 +125,7 @@ function bindProjectDirPath(name, args, projectDirPath) {
   const bound = { ...args }
   bound.dirPath = projectDirPath
 
-  if (name !== 'get_file_content' && name !== 'write_file_content') return bound
+  if (name !== 'get_file_content' && name !== 'write_file_content' && name !== 'download_file') return bound
 
   const filePath = String(args.path || '').trim()
   if (!filePath) return bound
@@ -139,6 +139,22 @@ function bindProjectDirPath(name, args, projectDirPath) {
   }
 
   if (path.isAbsolute(normPath)) {
+    // 下载工具：绝对路径若含 public 段，截取为 public 起的相对路径
+    if (name === 'download_file') {
+      const publicSep = `${path.sep}public${path.sep}`
+      const publicIdx = normPath.indexOf(publicSep)
+      if (publicIdx !== -1) {
+        bound.path = normPath.slice(publicIdx + 1)
+        return bound
+      }
+      if (normPath.endsWith(`${path.sep}public`) || normPath.endsWith('/public')) {
+        bound.path = 'public'
+        return bound
+      }
+      bound.path = path.join('public', path.basename(normPath))
+      return bound
+    }
+
     const srcSep = `${path.sep}src${path.sep}`
     const srcIdx = normPath.indexOf(srcSep)
     if (srcIdx !== -1) {
