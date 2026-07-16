@@ -6,14 +6,17 @@ import { register, login, refreshAccessToken, logout } from './auth/index.js';
 import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta } from './file/index.js';
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject,
   getLatestTemplateVersion,getCurrentProjectTemplateVersion,updateProjectTemplateVersion,getAllTemplateVersionFiles } from './project/index.js';
-import { createSession, getSessionList,updateSession,deleteSession,getSessionDetail } from './session/index.js';
+import { createSession, createUserChatSession, createStreamingAssistantSession, getSessionList,
+  updateSession,deleteSession,getSessionDetail } from './session/index.js';
 import { addLog, getLogList } from './log/index.js';
-import { chat, keepContext,message } from './openai/index.js';
+import { keepContext,message } from './openai/index.js';
+import { runAiChat, startChatStream, subscribeChatStream } from './chatStream/index.js';
 import { addSnapshot, getSnapshotList,deleteSnapshot,changeSnapshot,getSnapshotNum,getCurrentVision } from './snapshot/index.js';
 import { buildCommand,deleteOnlineVersion } from './exec/index.js';
+import { getCredential } from './cos/index.js';
 
 /** 默认服务端口 */
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 // const PORT = 5000;
 
 /** 创建 Express 应用实例 */
@@ -42,6 +45,17 @@ app.use(resCC);
 /** 健康检查接口 */
 app.get('/', (req, res) => {
   res.cc(0, 'Express 服务运行正常');
+});
+
+/** 获取腾讯云对象存储临时密钥 */
+app.get('/cos/credential', authJWT, async (req, res) => {
+  try {
+    const { account } = req.user;
+    const result = await getCredential(account);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
 });
 
 /** 用户注册 */
@@ -278,7 +292,99 @@ app.get('/session/detail',authJWT, async (req, res) => {
 
 /** 与AI对话（SSE 流式） */
 app.post('/chat/stream', authJWT, async (req, res) => {
-  const { prompt, projectId,title } = req.body
+  const { prompt, projectId, title, imageUrls = [] } = req.body
+  if (!prompt) return res.cc(1, '发送消息不能为空')
+  if (!projectId) return res.cc(1, '操作项目不能为空')
+
+  const sessionTitle = title || prompt.slice(0, 30)
+  const contextKey = `${req.user.account}-${projectId}-${sessionTitle}`
+  let context = [...message]
+
+  try {
+    // 获取上下文历史记录
+    if (sessionTitle && !contextMap.has(contextKey)) {
+      const { result } = await keepContext(req.user.account, projectId, sessionTitle)
+      const history = result.map(item => ({ role: item.role === "vision" ? "user" : item.role, content: item.content }))
+      context = context.concat(history)
+      contextMap.set(contextKey, history)
+    } else if (sessionTitle && contextMap.has(contextKey)) {
+      context = context.concat(contextMap.get(contextKey))
+    }
+
+    const projectInfo = await getProjectInfo(projectId, req.user)
+    const dirPath = projectInfo.dir_path
+    const projectTitle = projectInfo.title ?? ""
+    const desc = projectInfo.desc ?? ""
+    const userSession = await createUserChatSession({ title: sessionTitle, projectId, content: prompt }, req.user)
+    const assistantSession = await createStreamingAssistantSession({ title: sessionTitle, projectId }, req.user)
+
+    res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+    res.setHeader('Cache-Control', 'no-cache')
+    res.setHeader('Connection', 'keep-alive')
+    res.setHeader('X-Accel-Buffering', 'no')
+    res.flushHeaders?.()
+
+    res.write(`data: ${JSON.stringify({
+      event: 'message',
+      data: {
+        userSessionId: userSession.id,
+        assistantSessionId: assistantSession.sessionId,
+        assistantMessageId: assistantSession.messageId,
+      }
+    })}\n\n`)
+
+    const content = `【用户指令 - 最高优先级，请以此为准】\n${prompt}\n\n【项目背景 - 操作文件时使用】\n项目标题: ${projectTitle}\n项目描述: ${desc}\n项目Path: ${dirPath}\n组件库: vant\nCSS: tailwindcss\n\n注: 所有文件操作必须使用上述项目Path，path 参数用相对路径；看项目效果只需提示用户刷新页面`
+    startChatStream({
+      messageId: assistantSession.messageId,
+      sessionId: assistantSession.sessionId,
+      run: (send) => runAiChat(content, send, context, dirPath, imageUrls, prompt),
+      onComplete: async () => {
+        if (sessionTitle) contextMap.set(contextKey, context.filter(msg => msg.role !== 'system'))
+      },
+    })
+    await subscribeChatStream({
+      messageId: assistantSession.messageId,
+      account: req.user.account,
+      offset: 0,
+      res,
+    })
+  } catch (err) {
+    if (res.headersSent) {
+      res.write(`data: ${JSON.stringify({ event: 'error', data: err.message })}\n\n`)
+      return res.end()
+    }
+    res.cc(1, err.message);
+  }
+})
+
+app.get('/chat/messages/:messageId/stream', authJWT, async (req, res) => {
+  const { messageId } = req.params
+  const { offset = 0 } = req.query
+  if (!messageId) return res.cc(1, 'messageId 不能为空')
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders?.()
+
+  try {
+    await subscribeChatStream({
+      messageId,
+      account: req.user.account,
+      offset,
+      res,
+    })
+  } catch (err) {
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({ event: 'error', data: err.message })}\n\n`)
+      res.end()
+    }
+  }
+})
+
+app.post('/chat/stream/legacy-unused', authJWT, async (req, res) => {
+  const { prompt, projectId,title,imageUrls=[] } = req.body
   if (!prompt) return res.cc(1, '发送消息为空')
   if (!projectId) return res.cc(1, '操作项目为空')
 
@@ -304,15 +410,17 @@ app.post('/chat/stream', authJWT, async (req, res) => {
     if (res.writableEnded) return
     clientClosed = true
   })
+  
+  const contextKey = `${req.user.account}-${projectId}-${title}`
   let context = [...message]
-  if(title && !contextMap.has(`${req.user.account}-${projectId}-${title}`)){
-    const {result,length} = await keepContext(req.user.account,projectId,title);
-    context = context.concat(result.map(item => ({role: item.role, content: item.content})));
-    if(length > 0) contextMap.set(`${req.user.account}-${projectId}-${title}`,context);
-  }else if(title && contextMap.has(`${req.user.account}-${projectId}-${title}`)){
-    context = context.concat(contextMap.get(`${req.user.account}-${projectId}-${title}`));
-  }else{
-    contextMap.set(`${req.user.account}-${projectId}-${title}`,context);
+
+  if (title && !contextMap.has(contextKey)) {
+    const { result } = await keepContext(req.user.account, projectId, title)
+    const history = result.map(item => ({ role: item.role==="vision"?"user":item.role, content: item.content }))
+    context = context.concat(history)
+    contextMap.set(contextKey, history)
+  } else if (title && contextMap.has(contextKey)) {
+    context = context.concat(contextMap.get(contextKey))
   }
 
   try {
@@ -321,7 +429,13 @@ app.post('/chat/stream', authJWT, async (req, res) => {
     const projectTitle = projectInfo.title ?? ""
     const desc = projectInfo.desc ?? ""
     const content = `【用户指令 - 最高优先级，请以此为准】\n${prompt}\n\n【项目背景 - 操作文件时使用】\n项目标题: ${projectTitle}\n项目描述: ${desc}\n项目Path: ${dirPath}\n组件库: vant\nCSS: tailwindcss\n\n注: 所有文件操作必须使用上述项目Path，path 参数用相对路径；看项目效果只需提示用户刷新页面`
-    await chat(content, send, context, dirPath)
+    await runAiChat(content, send, context, dirPath, imageUrls, prompt)
+
+    // 同步更新内存上下文（不含 system，避免重复拼接）
+    if (title) {
+      contextMap.set(contextKey, context.filter(msg => msg.role !== 'system'))
+    }
+
     if (clientClosed) return
 
     send({ event: 'done', data: null })
@@ -336,23 +450,24 @@ app.post('/chat/stream', authJWT, async (req, res) => {
 
 /** 添加日志 */
 app.post('/log/add',authJWT, async (req, res) => {
-  const { content, projectId } = req.body;
+  const { content, projectId, title } = req.body;
   if(!content) return res.cc(1, '日志内容不能为空');
   if(!projectId) return res.cc(1, '项目id不能为空');
+  if(!title) return res.cc(1, '会话标题不能为空');
   try {
-    const result = await addLog(content, projectId, req.user);
+    const result = await addLog(content, projectId, title, req.user);
     res.cc(0, '添加成功', result);
   } catch (err) {
     res.cc(1, err.message);
   }
 })
 
-/** 获取日志列表 */
+/** 获取日志列表，title 可选，传入时按会话过滤 */
 app.get('/log/list',authJWT, async (req, res) => {
-  const { projectId } = req.query;
+  const { projectId, title } = req.query;
   if(!projectId) return res.cc(1, '项目id不能为空');
   try {
-    const result = await getLogList(projectId, req.user);
+    const result = await getLogList(projectId, title ? title : undefined, req.user);
     res.cc(0, '获取成功', result);
   } catch (err) {
     res.cc(1, err.message);
@@ -513,4 +628,3 @@ app.get('/temp/list',async(_,res)=>{
 app.listen(PORT, () => {
   console.log(`Express 服务已启动: http://localhost:${PORT}`);
 });
-

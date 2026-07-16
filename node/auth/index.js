@@ -7,7 +7,7 @@ import connection from '../../Mysql/index.js';
 const JWT_SECRET = process.env.JWT_SECRET || 'agentNode_dev_secret';
 
 /** Access Token 过期时间（短） */
-const ACCESS_TOKEN_EXPIRES_IN = '1m';
+const ACCESS_TOKEN_EXPIRES_IN = '6h';
 
 /** Refresh Token 有效期（天） */
 const REFRESH_TOKEN_DAYS = 7;

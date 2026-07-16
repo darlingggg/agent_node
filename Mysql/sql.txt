@@ -53,7 +53,7 @@ create table sessions(
     project_id INT not null comment '关联项目id',
     title varchar(50) comment '会话标题',
     account varchar(50) NOT NULL comment '用户账号',
-    role varchar(20) NOT NULL comment '角色类型(用户/ai)',
+    role varchar(20) NOT NULL comment '角色类型(用户/ai/vision)',
     content text comment '当前会话内容',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP comment '创建时间'
 )comment '会话表';
@@ -71,6 +71,11 @@ create table log(
     account varchar(50) not null comment '用户账号',
     created_at timestamp default current_timestamp comment '创建时间'
 )comment '日志表' auto_increment = 1000;
+
+-- 日志表增加会话标题字段，用于按会话过滤日志
+ALTER TABLE log
+  ADD COLUMN title VARCHAR(50) NULL COMMENT '会话标题' AFTER project_id;
+CREATE INDEX idx_log_project_title ON log (project_id, account, title);
 
 create table snapshots(
     id INT primary key auto_increment comment '快照id',
@@ -103,3 +108,12 @@ create table refresh_tokens(
 
 CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens (user_id);
 CREATE INDEX idx_refresh_tokens_hash ON refresh_tokens (token_hash);
+
+-- AI 流式消息后端托管保存：执行前请先确认字段不存在
+ALTER TABLE sessions
+  ADD COLUMN status VARCHAR(20) NOT NULL DEFAULT 'completed' COMMENT '消息状态: completed/streaming/failed',
+  ADD COLUMN error_msg TEXT NULL COMMENT 'AI生成失败信息',
+  ADD COLUMN updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间';
+
+CREATE INDEX idx_sessions_message_id ON sessions (message_id);
+CREATE INDEX idx_sessions_status ON sessions (status);
