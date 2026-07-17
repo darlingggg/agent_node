@@ -335,6 +335,7 @@ app.get('/file/asset', authJWT, async (req, res) => {
 app.post('/project/create',authJWT, async (req, res) => {
   const body = req.body;
   if(!body.title) return res.cc(1, '标题不能为空');
+  if(!body.type) return res.cc(1, '类型不能为空');
   try {
     const result = await createProject(req.user, body);
     res.cc(0, '创建成功', result);
@@ -734,9 +735,11 @@ app.get('/project/version',authJWT,async(req,res)=>{
 })
 
 /** 获取最新的模板版本 */
-app.get('/temp/latest',async(_,res)=>{
+app.get('/temp/latest',async(req,res)=>{
+  const { type } = req.query;
+  if(!type) return res.cc(1, '类型不能为空');
   try {
-    const result = await getLatestTemplateVersion();
+    const result = await getLatestTemplateVersion(type);
     res.cc(0, '获取成功', result);
   } catch (err) {
     res.cc(1, err.message);
@@ -768,9 +771,11 @@ app.post('/temp/update',authJWT,async(req,res)=>{
 })
 
 /** 获取项目模板版本列表 */
-app.get('/temp/list',async(_,res)=>{
+app.get('/temp/list',async(req,res)=>{
+  const { type } = req.query;
+  if(!type) return res.cc(1, '类型不能为空');
   try {
-    const result = await getAllTemplateVersionFiles();
+    const result = await getAllTemplateVersionFiles(type);
     res.cc(0, '获取成功', result);
   } catch (err) {
     res.cc(1, err.message);

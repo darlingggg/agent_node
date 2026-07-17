@@ -117,3 +117,5 @@ ALTER TABLE sessions
 
 CREATE INDEX idx_sessions_message_id ON sessions (message_id);
 CREATE INDEX idx_sessions_status ON sessions (status);
+
+alter table projects add column type varchar(20) not null default 'tool' comment '项目类型: tool/2d/3d'
