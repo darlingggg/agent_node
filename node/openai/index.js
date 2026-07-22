@@ -81,6 +81,21 @@ function buildSystemPrompt(projectDirPath) {
 4. **路径规则**：必须使用提供的「项目Path」作为根目录，read/write 使用相对路径。
 5. **视觉输入**：当用户消息含「视觉模型分析结果」时，系统已代你完成看图，该内容等同于你亲眼所见。必须直接基于此回答，禁止说「无法查看图片」「我看不到图像」「根据你附带的分析报告」；禁止追问或评论视觉工具来源。UI 改样式时优先采纳其中的样式参数与执行建议。
 
+## 移动端适配
+项目默认面向移动端预览，编写 UI 时必须遵守：
+1. 布局按移动端宽度设计（约 375px），使用 flex/grid + Tailwind，避免写死过大的固定宽度
+2. 交互按触摸设计：可点击区域足够大，避免 hover 作为唯一反馈
+3. 页面需适配安全区（如底部栏使用 safe-area / pb-safe 等），避免被刘海或手势条遮挡
+4. 文字与间距在小屏可读，禁止出现横向溢出（overflow-x）
+5. Canvas 游戏区域需适配容器宽度，保持比例，避免超出视口
+
+## 修改克制（强制）
+
+1. 【新建/首版实现】允许一次完整实现；写完后停止，等待用户反馈，禁止在同一轮里反复重写「再优化」
+2. 【迭代修改】用户指出具体问题后，只改该问题；同一文件原则上最多再写 1～2 次，禁止无明确问题时整文件重做
+3. 用户未指出问题时，禁止主动重构、换实现、重做样式或「顺便优化」
+4. 修改范围最小化：只改用户要求的点，无关代码保持原样
+5. 仅当改动会推翻现有架构/大面积重写时，先说明方案再动手；普通功能实现与小修直接做
 
 ## 跨域图片规范（WebContainer + COS）
 
@@ -94,7 +109,7 @@ function buildSystemPrompt(projectDirPath) {
      <div class="relative z-10">...</div>
    </div>
 4. Canvas 中 drawImage 外部图片前，先用 new Image() 并设置 img.crossOrigin = 'anonymous'
-5. 项目内本地资源不受此限制
+5. 项目内本地资源不受此限制,项目中的图片统一放在项目根目录下的public目录下
 
 # Disable Change
 禁止修改项目下的agent_base项目底座下的所有文件，新增删除修改都不允许。当用户指定修改agent_base项目底座下的文件时，提示没有权限进行修改。
@@ -125,7 +140,7 @@ function bindProjectDirPath(name, args, projectDirPath) {
   const bound = { ...args }
   bound.dirPath = projectDirPath
 
-  if (name !== 'get_file_content' && name !== 'write_file_content') return bound
+  if (name !== 'get_file_content' && name !== 'write_file_content' && name !== 'download_file') return bound
 
   const filePath = String(args.path || '').trim()
   if (!filePath) return bound
@@ -139,6 +154,22 @@ function bindProjectDirPath(name, args, projectDirPath) {
   }
 
   if (path.isAbsolute(normPath)) {
+    // 下载工具：绝对路径若含 public 段，截取为 public 起的相对路径
+    if (name === 'download_file') {
+      const publicSep = `${path.sep}public${path.sep}`
+      const publicIdx = normPath.indexOf(publicSep)
+      if (publicIdx !== -1) {
+        bound.path = normPath.slice(publicIdx + 1)
+        return bound
+      }
+      if (normPath.endsWith(`${path.sep}public`) || normPath.endsWith('/public')) {
+        bound.path = 'public'
+        return bound
+      }
+      bound.path = path.join('public', path.basename(normPath))
+      return bound
+    }
+
     const srcSep = `${path.sep}src${path.sep}`
     const srcIdx = normPath.indexOf(srcSep)
     if (srcIdx !== -1) {

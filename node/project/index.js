@@ -7,17 +7,27 @@ import path from 'path';
 // const rootDir = '/www/wwwroot/ai_agent';
 // const rootDir = 'C:/pro_self';
 const rootDir = 'C:/ai';
-const sourceDir = rootDir + '/projectTemp';
+
+/** 项目类型对应的模板目录相对路径 */
+const typeToPath = {
+  'tool':'/projectTemp', // 工具类项目模板
+  '2d':'/gameTemp2d',    // 2D 游戏模板
+  '3d':'/gameTemp3d',    // 3D 游戏模板
+}
 
 /** 创建项目 */
 export const createProject = async (user, body) => {
+  const type = body.type;
+  if(!type) throw new Error('类型不能为空');
+  if(!typeToPath[type]) throw new Error('类型不存在');
+  const sourceDir = rootDir + typeToPath[type];
   let targetDir = rootDir + '/copyPro';
   targetDir = targetDir + '/' + "project" + Math.random().toString(36).substring(2, 15)+ '_' + (+Date.now());
   const { dirPath } = await copyDir(sourceDir, targetDir);
   await updateProjectIndexHtml(dirPath, body.title, body.desc);
   const [result] = await connection.query(
-    'INSERT INTO projects (account, dir_path, title, `desc`,temp_version) VALUES (?, ?, ?, ?,?)',
-    [user.account, dirPath, body.title, body.desc,(await getLatestTemplateVersion()).version]
+    'INSERT INTO projects (account, dir_path, title, `desc`, temp_version, type) VALUES (?, ?, ?, ?, ?, ?)',
+    [user.account, dirPath, body.title, body.desc, (await getLatestTemplateVersion(type)).version, type]
   );
   if (result.affectedRows !== 1) {
     throw new Error('创建项目失败，请稍后重试');
@@ -121,9 +131,13 @@ function compareVersion(a, b) {
 
 /**
  * 获取模板 versions 目录下的所有版本文件（按版本号升序）
+ * @param {string} type 项目类型 tool/2d/3d
  * @returns {Promise<Array<{ version: string, fileName: string, filePath: string, content: object }>>}
  */
-export const getAllTemplateVersionFiles = async () => {
+export const getAllTemplateVersionFiles = async (type) => {
+  if(!type) throw new Error('类型不能为空');
+  if(!typeToPath[type]) throw new Error('类型不存在');
+  const sourceDir = rootDir + typeToPath[type];
   const versionsDir = path.join(sourceDir, 'agent_base', 'versions');
   const files = await fs.readdir(versionsDir);
   const jsonFiles = files.filter((name) => name.endsWith('.json'));
@@ -149,21 +163,28 @@ export const getAllTemplateVersionFiles = async () => {
  * 获取 (fromVersion, toVersion] 区间内的版本文件（左开右闭）
  * @param {string} fromVersion 起始版本（不含）
  * @param {string} toVersion 结束版本（含）
+ * @param {string} type 项目类型 tool/2d/3d
  * @returns {Promise<Array<{ version: string, fileName: string, filePath: string, content: object }>>}
  */
-export const getTemplateVersionFilesBetween = async (fromVersion, toVersion) => {
+export const getTemplateVersionFilesBetween = async (fromVersion, toVersion, type) => {
   if (compareVersion(fromVersion, toVersion) >= 0) {
     throw new Error('起始版本必须小于结束版本');
   }
 
-  const allVersions = await getAllTemplateVersionFiles();
+  const allVersions = await getAllTemplateVersionFiles(type);
   return allVersions.filter(
     (item) => compareVersion(item.version, fromVersion) > 0 && compareVersion(item.version, toVersion) <= 0
   );
 };
 
-/** 获取项目最新的模板版本 */
-export const getLatestTemplateVersion = async () => {
+/**
+ * 获取指定类型模板的最新版本
+ * @param {string} type 项目类型 tool/2d/3d
+ */
+export const getLatestTemplateVersion = async (type) => {
+  if(!type) throw new Error('类型不能为空');
+  if(!typeToPath[type]) throw new Error('类型不存在');
+  const sourceDir = rootDir + typeToPath[type];
   const versionPath = path.join(sourceDir,'agent_base','version.json');
   const file = await getFileContent(versionPath,rootDir);
   const version = JSON.parse(file).version;
@@ -179,16 +200,21 @@ export const getCurrentProjectTemplateVersion = async (projectId) => {
   return {version:rows[0].temp_version};
 }
 
-/** 更新项目模板版本 */
+/** 更新项目模板版本（从项目表读取 type 定位模板目录） */
 export const updateProjectTemplateVersion = async (projectId,upToVersion,user) => {
-  const latestVersion = await getLatestTemplateVersion();
+  const [result] = await connection.query('select dir_path, type from projects where id = ?',[projectId]);
+  if(!result[0]) throw new Error('项目不存在');
+  const dirPath = result[0].dir_path;
+  const type = result[0].type;
+  if(!typeToPath[type]) throw new Error('类型不存在');
+  const sourceDir = rootDir + typeToPath[type];
+
+  const latestVersion = await getLatestTemplateVersion(type);
   const currentVision = await getCurrentProjectTemplateVersion(projectId);
   if(!upToVersion) upToVersion = latestVersion.version;
   if(upToVersion === currentVision.version) return {content: '当前模板版本已是最新,无需更新',affectedRows:0};
 
-  const betweenVersionFiles = await getTemplateVersionFilesBetween(currentVision.version, upToVersion);
-  const [result] = await connection.query('select dir_path from projects where id = ?',[projectId]);
-  const dirPath = result[0].dir_path;
+  const betweenVersionFiles = await getTemplateVersionFilesBetween(currentVision.version, upToVersion, type);
 
   // 添加快照
   await addSnapshot(projectId,Math.random().toString(36).substring(2, 15)+'_'+upToVersion,dirPath,`更新项目模板版本到${upToVersion}`,user,1);

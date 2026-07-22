@@ -1,4 +1,5 @@
-import { getProjectTempFiles,getFileContent, writeFileContent } from "../file/index.js";
+import { getProjectTempFiles, getFileContent, writeFileContent, downloadFile } from "../file/index.js";
+
 export const tools = [
   {
     "type": "function",
@@ -62,13 +63,39 @@ export const tools = [
         "required": ["dirPath", "path", "content"]
       }
     }
-  }
+  },
+  {
+    "type": "function",
+    "function": {
+      "name": "download_file",
+      "description": "从 URL 下载文件到项目 public 目录（图片及其他类型均可），dirPath 由系统自动注入；path 为相对路径且必须落在 public 下，父目录不存在则自动创建",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dirPath": {
+              "type": "string",
+              "description": "项目根目录，由系统自动注入，无需自行填写"
+          },
+          "url": {
+            "type": "string",
+            "description": "文件下载地址，仅支持 http/https"
+          },
+          "path": {
+            "type": "string",
+            "description": "保存的相对路径，必须在 public 下，如 public/images/logo.png；也可写 images/logo.png（会自动归入 public）"
+          },
+        },
+        "required": ["dirPath", "url", "path"]
+      }
+    }
+  },
 ]
 
 export const functionMap = {
   "get_file_list": getFileListTool,
   "get_file_content": getFileContentTool,
   "write_file_content": writeFileContentTool,
+  "download_file": downloadFileTool,
 }
 
 const returnJson = (data,isSuccess=false,message="") => JSON.stringify({
@@ -101,5 +128,18 @@ export async function writeFileContentTool({dirPath,path,content}) {
     return returnJson(res, true, `写入文件内容成功: ${path}`)
   } catch (error) {
     return returnJson(null, false, `写入文件内容失败: ${error.message}`)
+  }
+}
+
+/**
+ * 从 URL 下载文件到项目 public 目录
+ * @param {{ dirPath: string, url: string, path: string }} params 工具参数
+ */
+export async function downloadFileTool({dirPath, url, path}) {
+  try {
+    const res = await downloadFile(url, path, dirPath);
+    return returnJson(res, true, `下载文件成功: ${res.relativePath}`)
+  } catch (error) {
+    return returnJson(null, false, `下载文件失败: ${error.message}`)
   }
 }

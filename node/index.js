@@ -3,7 +3,8 @@ import cors from 'cors';
 import resCC from './middleware/resCC.js';
 import authJWT from './middleware/authJWT.js';
 import { register, login, refreshAccessToken, logout } from './auth/index.js';
-import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta } from './file/index.js';
+import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta, importFilesToPublic, deletePublicAsset, resolvePublicAssetFile } from './file/index.js';
+import multer from 'multer';
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject,
   getLatestTemplateVersion,getCurrentProjectTemplateVersion,updateProjectTemplateVersion,getAllTemplateVersionFiles } from './project/index.js';
 import { createSession, createUserChatSession, createStreamingAssistantSession, getSessionList,
@@ -39,8 +40,70 @@ app.use(cors({
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// 统一响应结构中间件
+/** 统一响应结构中间件 */
 app.use(resCC);
+
+/** 内存上传：用于把前端 File 写入项目 public */
+const memoryUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    fileSize: 3 * 1024 * 1024,
+    files: 20,
+  },
+});
+
+/**
+ * 解析前端传入的 urls / saveNames 字段（支持 JSON 数组字符串、单个字符串、数组）
+ * @param {unknown} raw 原始值
+ * @returns {string[]}
+ */
+function parseImportUrls(raw) {
+  if (raw == null || raw === '') return [];
+  if (Array.isArray(raw)) return raw.map((item) => String(item).trim()).filter(Boolean);
+  if (typeof raw === 'string') {
+    const text = raw.trim();
+    if (!text) return [];
+    if (text.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          return parsed.map((item) => String(item).trim()).filter(Boolean);
+        }
+      } catch {
+        // 非 JSON 时按单个值处理
+      }
+    }
+    return [text];
+  }
+  return [String(raw).trim()].filter(Boolean);
+}
+
+/**
+ * 解析保存文件名列表（保留空字符串占位，表示该位置用默认名）
+ * @param {unknown} raw 原始值
+ * @returns {string[]}
+ */
+function parseSaveNames(raw) {
+  if (raw == null || raw === '') return [];
+  if (Array.isArray(raw)) {
+    return raw.map((item) => (item == null ? '' : String(item).trim()));
+  }
+  if (typeof raw === 'string') {
+    const text = raw.trim();
+    if (!text) return [];
+    if (text.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) {
+          return parsed.map((item) => (item == null ? '' : String(item).trim()));
+        }
+      } catch {
+      }
+    }
+    return [text];
+  }
+  return [String(raw).trim()];
+}
 
 /** 健康检查接口 */
 app.get('/', (req, res) => {
@@ -179,10 +242,100 @@ app.post('/file/meta', async (req, res) => {
   }
 });
 
+/**
+ * 下载/上传文件到项目 public 目录
+ * - dirPath: 项目根绝对路径（必填）
+ * - path: public 下子目录，默认 / 表示 public；/images 表示 public/images
+ * - urls: 远程链接，支持多个（JSON 数组字符串或单个 url）；也兼容字段 url
+ * - files: 上传的 File（multipart，字段名 files，可多个）
+ * - fileName / saveNames: 自定义保存文件名，按「先 urls 后 files」顺序对应
+ */
+app.post('/file/download',authJWT, memoryUpload.array('files', 20), async (req, res) => {
+  try {
+    const dirPath = req.body.dirPath;
+    const savePath = req.body.path ?? '/';
+    const urls = [
+      ...parseImportUrls(req.body.urls),
+      ...parseImportUrls(req.body.url),
+    ];
+    const files = Array.isArray(req.files) ? req.files : [];
+    // 自定义文件名：saveNames / fileNames / fileName 三选一，优先级从左到右
+    const saveNames = parseSaveNames(
+      req.body.saveNames ?? req.body.fileNames ?? req.body.fileName
+    );
+
+    if (!dirPath) return res.cc(1, '项目根路径 dirPath 不能为空');
+    if (urls.length === 0 && files.length === 0) {
+      return res.cc(1, '请至少提供一个 url 或上传文件');
+    }
+
+    const result = await importFilesToPublic({
+      dirPath,
+      path: savePath,
+      urls,
+      files,
+      saveNames,
+    });
+
+    const failed = result.results.filter((item) => !item.success);
+    if (failed.length === result.results.length) {
+      return res.cc(1, '全部文件处理失败', result);
+    }
+    if (failed.length > 0) {
+      return res.cc(0, `部分成功，失败 ${failed.length} 个`, result);
+    }
+    res.cc(0, '处理成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/**
+ * 删除 public 下的上传素材
+ * - dirPath: 项目根绝对路径（必填）
+ * - path: 文件绝对路径或相对项目根路径（必填），如 public/images/a.png
+ */
+app.post('/file/asset/delete', authJWT, async (req, res) => {
+  try {
+    const { dirPath, path: filePath } = req.body;
+    if (!dirPath) return res.cc(1, '项目根路径 dirPath 不能为空');
+    if (!filePath) return res.cc(1, '文件路径 path 不能为空');
+
+    const result = await deletePublicAsset(filePath, dirPath);
+    res.cc(0, '删除成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/**
+ * 读取 public 下素材文件（用于前端预览）
+ * - dirPath: 项目根绝对路径（必填）
+ * - path: 相对项目根或绝对路径（必填），如 public/images/a.png
+ */
+app.get('/file/asset', authJWT, async (req, res) => {
+  try {
+    const dirPath = req.query.dirPath;
+    const filePath = req.query.path;
+    if (!dirPath) return res.cc(1, '项目根路径 dirPath 不能为空');
+    if (!filePath) return res.cc(1, '文件路径 path 不能为空');
+
+    const result = await resolvePublicAssetFile(String(filePath), String(dirPath));
+    res.sendFile(result.path, (err) => {
+      if (err && !res.headersSent) {
+        res.cc(1, err.message || '文件读取失败');
+      }
+    });
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
 /** 创建项目 */
 app.post('/project/create',authJWT, async (req, res) => {
   const body = req.body;
   if(!body.title) return res.cc(1, '标题不能为空');
+  if(!body.type) return res.cc(1, '类型不能为空');
   try {
     const result = await createProject(req.user, body);
     res.cc(0, '创建成功', result);
@@ -582,9 +735,11 @@ app.get('/project/version',authJWT,async(req,res)=>{
 })
 
 /** 获取最新的模板版本 */
-app.get('/temp/latest',async(_,res)=>{
+app.get('/temp/latest',async(req,res)=>{
+  const { type } = req.query;
+  if(!type) return res.cc(1, '类型不能为空');
   try {
-    const result = await getLatestTemplateVersion();
+    const result = await getLatestTemplateVersion(type);
     res.cc(0, '获取成功', result);
   } catch (err) {
     res.cc(1, err.message);
@@ -616,9 +771,11 @@ app.post('/temp/update',authJWT,async(req,res)=>{
 })
 
 /** 获取项目模板版本列表 */
-app.get('/temp/list',async(_,res)=>{
+app.get('/temp/list',async(req,res)=>{
+  const { type } = req.query;
+  if(!type) return res.cc(1, '类型不能为空');
   try {
-    const result = await getAllTemplateVersionFiles();
+    const result = await getAllTemplateVersionFiles(type);
     res.cc(0, '获取成功', result);
   } catch (err) {
     res.cc(1, err.message);
