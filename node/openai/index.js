@@ -111,6 +111,14 @@ function buildSystemPrompt(projectDirPath) {
 4. Canvas 中 drawImage 外部图片前，先用 new Image() 并设置 img.crossOrigin = 'anonymous'
 5. 项目内本地资源不受此限制,项目中的图片统一放在项目根目录下的public目录下
 
+## 文件操作规则
+1. 修改已有文件前，必须先使用 get_file_list 和 get_file_content 查看最新项目结构与文件内容。
+2. 修改已有文件时，优先使用 upsert_file 并传入 unified diff patch；小范围或中等范围修改禁止使用 write_file_content。
+3. write_file_content 仅用于创建全新文件，或明确需要重写大部分文件内容的场景。
+4. 直接删除文件时使用 delete_file；delete_file 仅允许删除 src 或 public 目录下的文件。
+5. upsert_file 的 patch 必须使用项目相对路径，并带 a/ 与 b/ 前缀；新增文件使用 --- /dev/null，删除文件使用 +++ /dev/null；必须包含足够的 @@ hunk 上下文；不要输出完整文件内容。
+6. 如果 upsert_file 执行失败，必须重新读取最新文件内容并生成修正后的 patch，禁止直接切换为全量覆盖写入。
+
 # Disable Change
 禁止修改项目下的agent_base项目底座下的所有文件，新增删除修改都不允许。当用户指定修改agent_base项目底座下的文件时，提示没有权限进行修改。
 
@@ -140,7 +148,7 @@ function bindProjectDirPath(name, args, projectDirPath) {
   const bound = { ...args }
   bound.dirPath = projectDirPath
 
-  if (name !== 'get_file_content' && name !== 'write_file_content' && name !== 'download_file') return bound
+  if (name !== 'get_file_content' && name !== 'write_file_content' && name !== 'delete_file' && name !== 'download_file') return bound
 
   const filePath = String(args.path || '').trim()
   if (!filePath) return bound

@@ -2,6 +2,7 @@ import { createReadStream } from 'fs';
 import fs from 'fs/promises';
 import path from 'path';
 import readline from 'readline';
+import { parsePatch, applyPatch } from 'diff';
 
 /** 默认项目根目录 */
 export const PROJECT_TEMP_ROOT = 'C:\\pro_self\\projectTemp';
@@ -784,6 +785,25 @@ export async function downloadFile(url, filePath, dir) {
   }
 }
 
+export function assertDeletableToolPath(filePath, dirPath) {
+  const rootDir = nodePath.resolve(dirPath);
+  const fullPath = nodePath.resolve(rootDir, filePath);
+  const relativePath = nodePath.relative(rootDir, fullPath);
+
+  if (relativePath.startsWith('..') || nodePath.isAbsolute(relativePath)) {
+    throw new Error('不允许删除项目目录外的文件');
+  }
+
+  const normalized = relativePath.replace(/\\/g, '/');
+  if (!normalized.startsWith('src/') && !normalized.startsWith('public/')) {
+    throw new Error('仅允许删除 src 或 public 目录下的文件');
+  }
+
+  if (normalized.toLowerCase() === 'public/favicon.ico') {
+    throw new Error('不允许删除 public/favicon.ico，可通过上传同名文件替换');
+  }
+}
+
 /**
  * 删除指定文件
  * @param {string} filePath 文件路径（绝对或相对项目根）
@@ -899,3 +919,106 @@ export async function deletePublicAsset(filePath, dirPath) {
     relativePath: path.relative(rootDir, fullPath),
   }
 }
+
+export async function upsertFileByPatch(patch, dirPath) {
+  const rootDir = resolveRootDir(dirPath);
+  const patches = parsePatch(patch);
+  const results = [];
+
+  for (const patchItem of patches) {
+    const isCreate = patchItem.oldFileName === '/dev/null';
+    const isDelete = patchItem.newFileName === '/dev/null';
+    const fileName = isDelete ? patchItem.oldFileName : patchItem.newFileName;
+
+    if (!fileName || fileName === '/dev/null') {
+      throw new Error('patch 缺少有效文件路径');
+    }
+
+    const relativePath = fileName
+      .replace(/^a[\\/]/, '')
+      .replace(/^b[\\/]/, '');
+
+    const fullPath = resolveTargetPath(relativePath, rootDir);
+    assertWithinRoot(fullPath, rootDir);
+
+    if (isUnderAgentBase(fullPath, rootDir)) {
+      throw new Error('不允许修改 agent_base 项目底座下的文件');
+    }
+
+    if ((isCreate || isDelete) && !isUnderSrc(fullPath, rootDir) && !isUnderPublic(fullPath, rootDir)) {
+      throw new Error('新增或删除文件仅允许在 src 或 public 目录下进行');
+    }
+
+    if (isCreate) {
+      try {
+        await fs.access(fullPath);
+        throw new Error('目标文件已存在，无法按新增文件 patch 覆盖');
+      } catch (err) {
+        if (err.code !== 'ENOENT') throw err;
+      }
+    }
+
+    const oldText = isCreate ? '' : await fs.readFile(fullPath, 'utf-8');
+    const newText = applyPatch(oldText, patchItem, {
+      autoConvertLineEndings: true,
+      fuzzFactor: 1,
+    });
+
+    if (newText === false) {
+      throw new Error(`patch 应用失败: ${relativePath}`);
+    }
+
+    if (isCreate) {
+      await fs.mkdir(path.dirname(fullPath), { recursive: true });
+      await fs.writeFile(fullPath, newText, 'utf-8');
+    } else if (isDelete) {
+      if (isProtectedPublicAsset(fullPath, rootDir)) {
+        throw new Error('不允许删除 public/favicon.ico，可通过上传同名文件替换');
+      }
+      await fs.unlink(fullPath);
+    } else {
+      await fs.writeFile(fullPath, newText, 'utf-8');
+    }
+    console.log(`${relativePath} 增量更新成功`);
+    results.push({
+      path: fullPath,
+      relativePath: path.relative(rootDir, fullPath),
+      action: isCreate ? 'create' : isDelete ? 'delete' : 'update',
+    });
+  }
+
+  return results;
+}
+
+
+// const patch = `--- a/src/demo.js
+// +++ b/src/demo.js
+// @@ -1,6 +1,7 @@
+//  const name = 'Tom';
+// -const age = 18;
+// +const age = 20;
+ 
+//  function sayHello() {
+// -  console.log('hello ' + name);
+// +  console.log(\`hello \${name}\`);
+//  }
+// +export { sayHello };
+// `
+// upsertFileByPatch(patch, "C:\\Users\\admin\\Desktop\\patch-test")
+
+// const createPatch = `--- /dev/null
+// +++ b/src/new-file.js
+// @@ -0,0 +1,3 @@
+// +export function add(a, b) {
+// +  return a + b;
+// +}
+// `
+// upsertFileByPatch(createPatch, "C:\\Users\\admin\\Desktop\\patch-test")
+
+// const deletePatch = `--- a/public/old-file.txt
+// +++ /dev/null
+// @@ -1,2 +0,0 @@
+// -old line 1
+// -old line 2
+// `
+// upsertFileByPatch(deletePatch, "C:\\Users\\admin\\Desktop\\patch-test")

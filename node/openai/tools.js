@@ -1,4 +1,4 @@
-import { getProjectTempFiles, getFileContent, writeFileContent, downloadFile } from "../file/index.js";
+import { getProjectTempFiles, getFileContent, writeFileContent, deleteFileContent, downloadFile,upsertFileByPatch, assertDeletableToolPath } from "../file/index.js";
 
 export const tools = [
   {
@@ -67,6 +67,27 @@ export const tools = [
   {
     "type": "function",
     "function": {
+      "name": "delete_file",
+      "description": "删除项目内指定文件，dirPath 由系统自动注入；仅允许删除 src 或 public 目录下的文件，其他目录不允许删除。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dirPath": {
+              "type": "string",
+              "description": "项目根目录，由系统自动注入，无需自行填写"
+          },
+          "path": {
+            "type": "string",
+            "description": "要删除的项目相对文件路径，只允许 src 或 public 下的文件，如 src/App.vue 或 public/images/logo.png"
+          }
+        },
+        "required": ["dirPath", "path"]
+      }
+    }
+  },
+  {
+    "type": "function",
+    "function": {
       "name": "download_file",
       "description": "从 URL 下载文件到项目 public 目录（图片及其他类型均可），dirPath 由系统自动注入；path 为相对路径且必须落在 public 下，父目录不存在则自动创建",
       "parameters": {
@@ -89,13 +110,36 @@ export const tools = [
       }
     }
   },
+  {
+    "type": "function",
+    "function": {
+      "name": "upsert_file",
+      "description": "增量更新(修改)文件内容，dirPath 由系统自动注入",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "dirPath": {
+              "type": "string",
+              "description": "项目根目录，由系统自动注入，无需自行填写"
+          },
+          "patch": {
+            "type": "string",
+            "description": "用于应用到项目文件的 unified diff 字符串。格式示例：--- a/src/App.vue\\n+++ b/src/App.vue\\n@@ -1,3 +1,3 @@\\n-old line\\n+new line。新增文件用 --- /dev/null 和 +++ b/path；删除文件用 --- a/path 和 +++ /dev/null。patch 中路径必须是项目相对路径并带 a/ 或 b/ 前缀；不得包含绝对路径、../、二进制内容或重命名操作。只包含需要变更的 hunk，不要输出完整文件。"
+          },
+        },
+        "required": ["dirPath", "patch"]
+      }
+    }
+  },
 ]
 
 export const functionMap = {
   "get_file_list": getFileListTool,
   "get_file_content": getFileContentTool,
   "write_file_content": writeFileContentTool,
+  "delete_file": deleteFileTool,
   "download_file": downloadFileTool,
+  "upsert_file": upsertFileTool,
 }
 
 const returnJson = (data,isSuccess=false,message="") => JSON.stringify({
@@ -131,6 +175,16 @@ export async function writeFileContentTool({dirPath,path,content}) {
   }
 }
 
+export async function deleteFileTool({dirPath,path}) {
+  try {
+    assertDeletableToolPath(path, dirPath);
+    const res = await deleteFileContent(path, dirPath);
+    return returnJson(res, true, `删除文件成功: ${path}`)
+  } catch (error) {
+    return returnJson(null, false, `删除文件失败: ${error.message}`)
+  }
+}
+
 /**
  * 从 URL 下载文件到项目 public 目录
  * @param {{ dirPath: string, url: string, path: string }} params 工具参数
@@ -141,5 +195,14 @@ export async function downloadFileTool({dirPath, url, path}) {
     return returnJson(res, true, `下载文件成功: ${res.relativePath}`)
   } catch (error) {
     return returnJson(null, false, `下载文件失败: ${error.message}`)
+  }
+}
+
+export async function upsertFileTool({dirPath, patch}) {
+  try {
+    const res = await upsertFileByPatch(patch, dirPath);
+    return returnJson(res, true, `增量更新文件内容成功: ${patch}`)
+  } catch (error) {
+    return returnJson(null, false, `增量更新文件内容失败: ${error.message}`)
   }
 }
