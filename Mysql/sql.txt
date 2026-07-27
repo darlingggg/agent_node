@@ -118,4 +118,8 @@ ALTER TABLE sessions
 CREATE INDEX idx_sessions_message_id ON sessions (message_id);
 CREATE INDEX idx_sessions_status ON sessions (status);
 
-alter table projects add column type varchar(20) not null default 'tool' comment '项目类型: tool/2d/3d'
+alter table projects add column type varchar(20) not null default 'tool' comment '项目类型: tool/2d/3d';
+
+alter table users add column avatar varchar(100) default '' comment '用户头像';
+alter table users add column wx_openid varchar(50) comment '关联微信openid';
+ALTER TABLE users ADD UNIQUE INDEX uk_users_wx_openid (wx_openid);

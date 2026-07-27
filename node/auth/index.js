@@ -68,7 +68,7 @@ async function saveRefreshToken(userId, refreshToken) {
  * @param {object} user 用户信息 { id, account, nickname }
  * @returns {Promise<{id: number, account: string, nickname: string, accessToken: string, refreshToken: string}>}
  */
-async function issueTokenPair(user) {
+export async function issueTokenPair(user) {
   const accessToken = createAccessToken({
     id: user.id,
     account: user.account,

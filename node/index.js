@@ -3,6 +3,7 @@ import cors from 'cors';
 import resCC from './middleware/resCC.js';
 import authJWT from './middleware/authJWT.js';
 import { register, login, refreshAccessToken, logout } from './auth/index.js';
+import { buildWechatOAuthUrl, loginWithWechatCode, verifyWechatServerSignature } from './auth/wechat.js';
 import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta, importFilesToPublic, deletePublicAsset, resolvePublicAssetFile } from './file/index.js';
 import multer from 'multer';
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject,
@@ -25,6 +26,10 @@ const app = express();
 
 // 创建上下文map
 const contextMap = new Map();
+
+// 创建微信授权map
+const wechatAuthMap = new Map();
+const timeout = 1000 * 60 * 3; // 3分钟
 
 // 接口返回 JSON，关闭 ETag 避免浏览器缓存导致 304
 app.set('etag', false);
@@ -105,9 +110,83 @@ function parseSaveNames(raw) {
   return [String(raw).trim()];
 }
 
+function cleanupWechatAuthMap() {
+  const now = Date.now();
+
+  for (const [state, auth] of wechatAuthMap) {
+    if (now > auth.timeout) {
+      wechatAuthMap.delete(state);
+    }
+  }
+}
+
+function getExternalOrigin(req) {
+  const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const forwardedHost = req.get('x-forwarded-host')?.split(',')[0]?.trim();
+  const protocol = forwardedProto || req.protocol;
+  const host = forwardedHost || req.get('host');
+  return `${protocol}://${host}`;
+}
+
+function getWechatRedirectUri(req) {
+  return String(req.query.redirectUri || `${getExternalOrigin(req)}/auth/wechat/callback`);
+}
+
 /** 健康检查接口 */
 app.get('/', (req, res) => {
   res.cc(0, 'Express 服务运行正常');
+});
+
+/** 微信测试账号服务器验证 */
+app.get('/wechat', (req, res) => {
+  const { signature, timestamp, nonce, echostr } = req.query;
+
+  if (!verifyWechatServerSignature({ signature, timestamp, nonce })) {
+    res.status(403).type('text/plain').send('Forbidden');
+    return;
+  }
+
+  res.type('text/plain').send(String(echostr || ''));
+});
+
+app.post('/wechat', (req, res) => {
+  res.type('text/plain').send('success');
+});
+
+app.get('/auth/wechat/url', (req, res) => {
+  cleanupWechatAuthMap();
+  const account = req.query.account ? String(req.query.account) : '';
+  try {
+    const redirectUri = getWechatRedirectUri(req);
+    const state =crypto.randomBytes(16).toString('hex')
+    const authorizeUrl = buildWechatOAuthUrl({ redirectUri, state });
+    wechatAuthMap.set(state, { timeout: Date.now() + timeout, status: 'pending',desc:"等待用户授权...",account:account });
+    res.cc(0, '获取微信授权链接成功', { authorizeUrl, redirectUri, state });
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+app.get('/auth/wechat/callback', async (req, res) => {
+  const state = req.query.state ? String(req.query.state) : '';
+  try {
+    const code = String(req.query.code || '');
+    const wechatAuth = wechatAuthMap.get(state);
+    if(!wechatAuth || Date.now() > wechatAuth.timeout){
+      wechatAuthMap.delete(state);
+      return res.cc(1, '微信授权状态已过期')
+    }
+    wechatAuth.status = 'ongoing';
+    wechatAuth.desc = '授权中...';
+    const result = await loginWithWechatCode(code,wechatAuth,wechatAuth.account);
+    wechatAuth.status = 'success';
+    wechatAuth.desc = '授权成功';
+    wechatAuthMap.delete(state);
+    res.cc(0, '微信登录成功', { ...result, state });
+  } catch (err) {
+    wechatAuthMap.delete(state);
+    res.cc(1, err.message);
+  }
 });
 
 /** 获取腾讯云对象存储临时密钥 */
