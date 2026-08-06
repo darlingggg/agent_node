@@ -120,9 +120,12 @@ CREATE INDEX idx_sessions_status ON sessions (status);
 
 alter table projects add column type varchar(20) not null default 'tool' comment '项目类型: tool/2d/3d';
 
-alter table users add column avatar varchar(100) default '' comment '用户头像';
+alter table users add column avatar varchar(2048) default '' comment '用户头像';
 alter table users add column wx_openid varchar(50) comment '关联微信openid';
 ALTER TABLE users ADD UNIQUE INDEX uk_users_wx_openid (wx_openid);
+
+-- 头像 URL 可能包含较长的微信/QQ CDN 查询参数，已有数据库执行一次
+ALTER TABLE users MODIFY COLUMN avatar VARCHAR(2048) DEFAULT '' COMMENT '用户头像';
 
 -- QQ 互联登录：上线前执行一次
 ALTER TABLE users ADD COLUMN qq_openid VARCHAR(64) NULL COMMENT '关联 QQ openid';
