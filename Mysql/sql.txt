@@ -123,3 +123,7 @@ alter table projects add column type varchar(20) not null default 'tool' comment
 alter table users add column avatar varchar(100) default '' comment '用户头像';
 alter table users add column wx_openid varchar(50) comment '关联微信openid';
 ALTER TABLE users ADD UNIQUE INDEX uk_users_wx_openid (wx_openid);
+
+-- QQ 互联登录：上线前执行一次
+ALTER TABLE users ADD COLUMN qq_openid VARCHAR(64) NULL COMMENT '关联 QQ openid';
+ALTER TABLE users ADD UNIQUE INDEX uk_users_qq_openid (qq_openid);
