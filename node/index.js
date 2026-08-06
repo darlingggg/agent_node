@@ -126,7 +126,7 @@ function getExternalOrigin(req) {
 }
 
 function getWechatRedirectUri(req) {
-  return String(req.query.redirectUri || `${getExternalOrigin(req)}/auth/wechat/callback`);
+  return String(req.query.redirectUri || `${getExternalOrigin(req)}/api/auth/wechat/callback`);
 }
 
 function getQQRedirectUri() {
