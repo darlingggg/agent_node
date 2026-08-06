@@ -1,11 +1,12 @@
 import express from 'express';
 import cors from 'cors';
-import crypto from 'crypto';
+import { fileURLToPath } from 'url';
 import resCC from './middleware/resCC.js';
 import authJWT from './middleware/authJWT.js';
-import { register, login, refreshAccessToken, logout } from './auth/index.js';
+import { register, login, refreshAccessToken, logout, getUserProfile } from './auth/index.js';
 import { buildWechatOAuthUrl, loginWithWechatCode, verifyWechatServerSignature } from './auth/wechat.js';
 import { buildQQOAuthUrl, loginWithQQCode } from './auth/qq.js';
+import { OAuthSessionStore } from './auth/oauthSession.js';
 import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta, importFilesToPublic, deletePublicAsset, resolvePublicAssetFile } from './file/index.js';
 import multer from 'multer';
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject,
@@ -30,11 +31,10 @@ const app = express();
 // 创建上下文map
 const contextMap = new Map();
 
-// 创建微信授权map
-const wechatAuthMap = new Map();
-// 创建 QQ 授权 map
-const qqAuthMap = new Map();
-const timeout = 1000 * 60 * 3; // 3分钟
+const wechatAuthSessions = new OAuthSessionStore('wechat');
+const qqAuthSessions = new OAuthSessionStore('qq');
+const oauthSuccessPage = fileURLToPath(new URL('./auth/pages/oauth-success.html', import.meta.url));
+const oauthErrorPage = fileURLToPath(new URL('./auth/pages/oauth-error.html', import.meta.url));
 
 // 接口返回 JSON，关闭 ETag 避免浏览器缓存导致 304
 app.set('etag', false);
@@ -117,26 +117,6 @@ function parseSaveNames(raw) {
   return [String(raw).trim()];
 }
 
-function cleanupWechatAuthMap() {
-  const now = Date.now();
-
-  for (const [state, auth] of wechatAuthMap) {
-    if (now > auth.timeout) {
-      wechatAuthMap.delete(state);
-    }
-  }
-}
-
-function cleanupQQAuthMap() {
-  const now = Date.now();
-
-  for (const [state, auth] of qqAuthMap) {
-    if (now > auth.timeout) {
-      qqAuthMap.delete(state);
-    }
-  }
-}
-
 function getExternalOrigin(req) {
   const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
   const forwardedHost = req.get('x-forwarded-host')?.split(',')[0]?.trim();
@@ -151,6 +131,34 @@ function getWechatRedirectUri(req) {
 
 function getQQRedirectUri() {
   return String(QQ_REDIRECT_URI || '');
+}
+
+function getOAuthEventsUrl(provider, state, streamToken) {
+  const params = new URLSearchParams({ state, streamToken });
+  return `/auth/${provider}/events?${params.toString()}`;
+}
+
+function subscribeOAuthEvents(store, req, res) {
+  const result = store.subscribe({
+    state: String(req.query.state || ''),
+    streamToken: String(req.query.streamToken || ''),
+    req,
+    res,
+  });
+
+  if (!result.ok && !res.headersSent) {
+    res.status(result.status).json({ status: 1, message: result.message, data: null });
+  }
+}
+
+function sendOAuthResultPage(res, success) {
+  res.status(200);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; frame-ancestors 'none'");
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-OAuth-Result', success ? 'success' : 'error');
+  return res.sendFile(success ? oauthSuccessPage : oauthErrorPage);
 }
 
 /** 健康检查接口 */
@@ -175,116 +183,170 @@ app.post('/wechat', (req, res) => {
 });
 
 app.get('/auth/wechat/url', (req, res) => {
-  cleanupWechatAuthMap();
+  let authSession = null;
   try {
     const redirectUri = getWechatRedirectUri(req);
-    const state =crypto.randomBytes(16).toString('hex')
+    authSession = wechatAuthSessions.create({ redirectUri });
+    const { state, streamToken, expiresAt } = authSession;
     const authorizeUrl = buildWechatOAuthUrl({ redirectUri, state });
-    wechatAuthMap.set(state, { timeout: Date.now() + timeout, status: 'pending',desc:"等待用户授权..." });
-    res.cc(0, '获取微信授权链接成功', { authorizeUrl, redirectUri, state });
+    const eventsUrl = getOAuthEventsUrl('wechat', state, streamToken);
+    res.cc(0, '获取微信授权链接成功', {
+      authorizeUrl,
+      redirectUri,
+      state,
+      streamToken,
+      eventsUrl,
+      expiresAt,
+    });
   } catch (err) {
+    if (authSession) wechatAuthSessions.remove(authSession.state);
     res.cc(1, err.message);
   }
 });
 
 app.get('/auth/wechat/bind',authJWT,(req,res)=>{
   const { account } = req.user;
-  cleanupWechatAuthMap();
+  let authSession = null;
   try {
     const redirectUri = getWechatRedirectUri(req);
-    const state =crypto.randomBytes(16).toString('hex')
+    authSession = wechatAuthSessions.create({ redirectUri, account });
+    const { state, streamToken, expiresAt } = authSession;
     const authorizeUrl = buildWechatOAuthUrl({ redirectUri, state });
-    wechatAuthMap.set(state, { timeout: Date.now() + timeout, status: 'pending',desc:"等待用户授权...",account:account});
-    res.cc(0, '获取微信授权链接成功', { authorizeUrl, redirectUri, state });
+    const eventsUrl = getOAuthEventsUrl('wechat', state, streamToken);
+    res.cc(0, '获取微信授权链接成功', {
+      authorizeUrl,
+      redirectUri,
+      state,
+      streamToken,
+      eventsUrl,
+      expiresAt,
+    });
   } catch (err) {
+    if (authSession) wechatAuthSessions.remove(authSession.state);
     res.cc(1, err.message);
   }
 })
 
+app.get('/auth/wechat/events', (req, res) => {
+  subscribeOAuthEvents(wechatAuthSessions, req, res);
+});
+
 app.get('/auth/wechat/callback', async (req, res) => {
   const state = req.query.state ? String(req.query.state) : '';
+  const wechatAuth = wechatAuthSessions.get(state);
+
+  if (!wechatAuth || wechatAuth.status !== 'waiting') {
+    return sendOAuthResultPage(res, false);
+  }
+
   try {
     const code = String(req.query.code || '');
-    const wechatAuth = wechatAuthMap.get(state);
-    if(!wechatAuth || Date.now() > wechatAuth.timeout){
-      wechatAuthMap.delete(state);
-      return res.cc(1, '微信授权状态已过期')
-    }
-    wechatAuth.status = 'ongoing';
-    wechatAuth.desc = '授权中...';
+    wechatAuthSessions.publish(state, {
+      event: 'scan_complete',
+      status: 'processing',
+      message: '扫码完成，正在登录...',
+    });
     const result = await loginWithWechatCode(code,wechatAuth,wechatAuth.account || "");
-    wechatAuth.status = 'success';
-    wechatAuth.desc = '授权成功';
-    wechatAuthMap.delete(state);
-    res.cc(0, '微信登录成功', { ...result, state });
+    wechatAuthSessions.publish(state, {
+      event: 'login_success',
+      status: 'success',
+      message: '微信登录成功',
+      result: { ...result, state },
+    });
+    return sendOAuthResultPage(res, true);
   } catch (err) {
-    wechatAuthMap.delete(state);
-    res.cc(1, err.message);
+    wechatAuthSessions.publish(state, {
+      event: 'login_error',
+      status: 'error',
+      message: err.message,
+    });
+    return sendOAuthResultPage(res, false);
   }
 });
 
 app.get('/auth/qq/url', (req, res) => {
-  cleanupQQAuthMap();
+  let authSession = null;
   try {
     const redirectUri = getQQRedirectUri();
-    const state = crypto.randomBytes(16).toString('hex');
+    authSession = qqAuthSessions.create({ redirectUri });
+    const { state, streamToken, expiresAt } = authSession;
     const authorizeUrl = buildQQOAuthUrl({ redirectUri, state });
-    qqAuthMap.set(state, {
-      timeout: Date.now() + timeout,
-      status: 'pending',
-      desc: '等待用户授权...',
+    const eventsUrl = getOAuthEventsUrl('qq', state, streamToken);
+    res.cc(0, '获取 QQ 授权链接成功', {
+      authorizeUrl,
       redirectUri,
+      state,
+      streamToken,
+      eventsUrl,
+      expiresAt,
     });
-    res.cc(0, '获取 QQ 授权链接成功', { authorizeUrl, redirectUri, state });
   } catch (err) {
+    if (authSession) qqAuthSessions.remove(authSession.state);
     res.cc(1, err.message);
   }
 });
 
 app.get('/auth/qq/bind', authJWT, (req, res) => {
   const { account } = req.user;
-  cleanupQQAuthMap();
+  let authSession = null;
   try {
     const redirectUri = getQQRedirectUri();
-    const state = crypto.randomBytes(16).toString('hex');
+    authSession = qqAuthSessions.create({ redirectUri, account });
+    const { state, streamToken, expiresAt } = authSession;
     const authorizeUrl = buildQQOAuthUrl({ redirectUri, state });
-    qqAuthMap.set(state, {
-      timeout: Date.now() + timeout,
-      status: 'pending',
-      desc: '等待用户授权...',
-      account,
+    const eventsUrl = getOAuthEventsUrl('qq', state, streamToken);
+    res.cc(0, '获取 QQ 绑定链接成功', {
+      authorizeUrl,
       redirectUri,
+      state,
+      streamToken,
+      eventsUrl,
+      expiresAt,
     });
-    res.cc(0, '获取 QQ 绑定链接成功', { authorizeUrl, redirectUri, state });
   } catch (err) {
+    if (authSession) qqAuthSessions.remove(authSession.state);
     res.cc(1, err.message);
   }
 });
 
+app.get('/auth/qq/events', (req, res) => {
+  subscribeOAuthEvents(qqAuthSessions, req, res);
+});
+
 async function handleQQCallback(req, res) {
   const state = req.query.state ? String(req.query.state) : '';
+  const qqAuth = qqAuthSessions.get(state);
+
+  if (!qqAuth || qqAuth.status !== 'waiting') {
+    return sendOAuthResultPage(res, false);
+  }
+
   try {
     if (req.query.error) {
       throw new Error(String(req.query.error_description || req.query.error));
     }
 
     const code = String(req.query.code || '');
-    const qqAuth = qqAuthMap.get(state);
-    if (!qqAuth || Date.now() > qqAuth.timeout) {
-      qqAuthMap.delete(state);
-      return res.cc(1, 'QQ 授权状态已过期');
-    }
-
-    qqAuth.status = 'ongoing';
-    qqAuth.desc = '授权中...';
+    qqAuthSessions.publish(state, {
+      event: 'scan_complete',
+      status: 'processing',
+      message: '扫码完成，正在登录...',
+    });
     const result = await loginWithQQCode(code, qqAuth, qqAuth.account || '');
-    qqAuth.status = 'success';
-    qqAuth.desc = '授权成功';
-    qqAuthMap.delete(state);
-    return res.cc(0, 'QQ 登录成功', { ...result, state });
+    qqAuthSessions.publish(state, {
+      event: 'login_success',
+      status: 'success',
+      message: 'QQ 登录成功',
+      result: { ...result, state },
+    });
+    return sendOAuthResultPage(res, true);
   } catch (err) {
-    qqAuthMap.delete(state);
-    return res.cc(1, err.message);
+    qqAuthSessions.publish(state, {
+      event: 'login_error',
+      status: 'error',
+      message: err.message,
+    });
+    return sendOAuthResultPage(res, false);
   }
 }
 
@@ -348,8 +410,13 @@ app.post('/auth/logout', async (req, res) => {
 });
 
 /** 获取当前登录用户信息 */
-app.get('/user/profile', authJWT, (req, res) => {
-  res.cc(0, '获取成功', req.user);
+app.get('/user/profile', authJWT, async (req, res) => {
+  try {
+    const profile = await getUserProfile(req.user.id);
+    res.cc(0, '获取成功', profile);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
 });
 
 /** 拷贝文件夹到指定目录 */

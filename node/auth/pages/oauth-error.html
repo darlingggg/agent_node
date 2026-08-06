@@ -1,0 +1,147 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <link rel="icon" href="data:,">
+  <title>授权未完成</title>
+  <style>
+    :root {
+      color: #211b1b;
+      background: #f8f6f6;
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+      font-synthesis: none;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-width: 280px;
+      min-height: 100svh;
+      margin: 0;
+      background: #f8f6f6;
+    }
+
+    main {
+      width: min(100%, 480px);
+      min-height: 100svh;
+      margin: 0 auto;
+      padding: max(28px, env(safe-area-inset-top)) 28px max(28px, env(safe-area-inset-bottom));
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+
+    .brand {
+      color: #675b5b;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .result {
+      align-self: center;
+      text-align: center;
+    }
+
+    .mark {
+      width: 76px;
+      height: 76px;
+      margin: 0 auto 28px;
+      border: 1px solid #dda9a9;
+      border-radius: 50%;
+      background: #f8eaea;
+      position: relative;
+      animation: arrive 420ms ease-out both;
+    }
+
+    .mark::before,
+    .mark::after {
+      width: 4px;
+      height: 32px;
+      position: absolute;
+      top: 21px;
+      left: 35px;
+      border-radius: 2px;
+      background: #a63d3d;
+      content: "";
+    }
+
+    .mark::before {
+      transform: rotate(45deg);
+    }
+
+    .mark::after {
+      transform: rotate(-45deg);
+    }
+
+    h1 {
+      margin: 0;
+      color: #211b1b;
+      font-size: 30px;
+      font-weight: 750;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .message {
+      max-width: 320px;
+      margin: 14px auto 0;
+      color: #685b5b;
+      font-size: 16px;
+      line-height: 1.75;
+      letter-spacing: 0;
+    }
+
+    .direction {
+      width: min(100%, 320px);
+      margin: 34px auto 0;
+      padding-top: 18px;
+      border-top: 1px solid #ded7d7;
+      color: #3f3737;
+      font-size: 14px;
+      line-height: 1.65;
+      letter-spacing: 0;
+    }
+
+    footer {
+      color: #8a7f7f;
+      font-size: 12px;
+      line-height: 1.5;
+      letter-spacing: 0;
+      text-align: center;
+    }
+
+    @keyframes arrive {
+      from {
+        opacity: 0;
+        transform: scale(.82);
+      }
+      to {
+        opacity: 1;
+        transform: scale(1);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .mark {
+        animation: none;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">DARLING.XIN</div>
+    <section class="result" aria-labelledby="result-title">
+      <div class="mark" aria-hidden="true"></div>
+      <h1 id="result-title">授权未完成</h1>
+      <p class="message">本次登录没有完成，原设备不会登录此账号。</p>
+      <p class="direction">请返回原设备，重新获取二维码后再试。</p>
+    </section>
+    <footer>当前页面可以安全关闭</footer>
+  </main>
+</body>
+</html>

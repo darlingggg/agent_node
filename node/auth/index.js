@@ -160,6 +160,33 @@ export async function login(account, password) {
 }
 
 /**
+ * 获取当前用户的公开资料与第三方账号绑定状态。
+ * openid 只用于服务端关联，不返回给前端。
+ * @param {number} userId 用户 ID
+ */
+export async function getUserProfile(userId) {
+  const [rows] = await connection.query(
+    'SELECT id, account, nickname, qq_openid, wx_openid FROM users WHERE id = ?',
+    [userId]
+  );
+
+  if (rows.length === 0) {
+    throw new Error('用户不存在');
+  }
+
+  const user = rows[0];
+  return {
+    id: user.id,
+    account: user.account,
+    nickname: user.nickname,
+    bindings: {
+      qq: Boolean(user.qq_openid),
+      wechat: Boolean(user.wx_openid),
+    },
+  };
+}
+
+/**
  * 用 Refresh Token 换取新的 Access Token
  * @param {string} refreshToken 客户端传来的 refresh token
  * @returns {Promise<{accessToken: string}>}
