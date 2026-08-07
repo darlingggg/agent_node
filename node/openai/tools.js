@@ -124,7 +124,7 @@ export const tools = [
           },
           "patch": {
             "type": "string",
-            "description": "用于应用到项目文件的 unified diff 字符串。格式示例：--- a/src/App.vue\\n+++ b/src/App.vue\\n@@ -1,3 +1,3 @@\\n-old line\\n+new line。新增文件用 --- /dev/null 和 +++ b/path；删除文件用 --- a/path 和 +++ /dev/null。patch 中路径必须是项目相对路径并带 a/ 或 b/ 前缀；不得包含绝对路径、../、二进制内容或重命名操作。只包含需要变更的 hunk，不要输出完整文件。"
+            "description": "用于应用到项目文件的 unified diff 字符串。格式示例：--- a/src/App.vue\\n+++ b/src/App.vue\\n@@ -1,3 +1,3 @@\\n-old line\\n+new line。新增文件用 --- /dev/null 和 +++ b/path；删除文件用 --- a/path 和 +++ /dev/null。patch 中路径必须是项目相对路径并带 a/ 或 b/ 前缀；不得包含绝对路径、../、二进制内容或重命名操作。@@ 头部的旧/新行数必须分别等于正文中上下文与删除/新增行的总数。只包含需要变更的 hunk，不要输出完整文件。"
           },
         },
         "required": ["dirPath", "patch"]

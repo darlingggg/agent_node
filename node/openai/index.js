@@ -116,7 +116,7 @@ function buildSystemPrompt(projectDirPath) {
 2. 修改已有文件时，优先使用 upsert_file 并传入 unified diff patch；小范围或中等范围修改禁止使用 write_file_content。
 3. write_file_content 仅用于创建全新文件，或明确需要重写大部分文件内容的场景。
 4. 直接删除文件时使用 delete_file；delete_file 仅允许删除 src 或 public 目录下的文件。
-5. upsert_file 的 patch 必须使用项目相对路径，并带 a/ 与 b/ 前缀；新增文件使用 --- /dev/null，删除文件使用 +++ /dev/null；必须包含足够的 @@ hunk 上下文；不要输出完整文件内容。
+5. upsert_file 的 patch 必须使用项目相对路径，并带 a/ 与 b/ 前缀；新增文件使用 --- /dev/null，删除文件使用 +++ /dev/null；必须包含足够的 @@ hunk 上下文；@@ 头部的旧/新行数必须分别等于正文中上下文与删除/新增行的总数；不要输出完整文件内容。
 6. 如果 upsert_file 执行失败，必须重新读取最新文件内容并生成修正后的 patch，禁止直接切换为全量覆盖写入。
 
 # Disable Change

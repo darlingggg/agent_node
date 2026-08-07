@@ -920,9 +920,75 @@ export async function deletePublicAsset(filePath, dirPath) {
   }
 }
 
+const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
+
+function isPatchBoundary(lines, index) {
+  const line = lines[index];
+  if (/^@@\s/.test(line) || /^(?:diff --git |Index:|={3,}$)/.test(line)) {
+    return true;
+  }
+
+  return /^---\s/.test(line)
+    && /^\+\+\+\s/.test(lines[index + 1] || '')
+    && /^@@\s/.test(lines[index + 2] || '');
+}
+
+/**
+ * 按 hunk 正文修正 unified diff 头部的行数，容错 AI 常见的计数偏差。
+ * 只统计合法 diff 行，不补造上下文或修改补丁内容。
+ */
+export function normalizePatchHunkCounts(patch) {
+  if (typeof patch !== 'string' || !patch.trim()) {
+    throw new Error('patch 不能为空');
+  }
+
+  const lines = patch.replace(/\r\n/g, '\n').split('\n');
+  let correctedHunks = 0;
+
+  for (let index = 0; index < lines.length; index++) {
+    const header = lines[index].match(HUNK_HEADER_PATTERN);
+    if (!header) continue;
+
+    let oldLines = 0;
+    let newLines = 0;
+
+    for (let bodyIndex = index + 1; bodyIndex < lines.length; bodyIndex++) {
+      if (isPatchBoundary(lines, bodyIndex)) break;
+
+      const line = lines[bodyIndex];
+      if (line === '' && bodyIndex === lines.length - 1) break;
+
+      const operation = line === '' ? ' ' : line[0];
+      if (operation === ' ') {
+        oldLines++;
+        newLines++;
+      } else if (operation === '-') {
+        oldLines++;
+      } else if (operation === '+') {
+        newLines++;
+      } else if (operation !== '\\') {
+        throw new Error(`Hunk at line ${index + 1} contained invalid line ${line}`);
+      }
+    }
+
+    const declaredOldLines = header[2] === undefined ? 1 : Number(header[2]);
+    const declaredNewLines = header[4] === undefined ? 1 : Number(header[4]);
+    if (declaredOldLines !== oldLines || declaredNewLines !== newLines) {
+      lines[index] = `@@ -${header[1]},${oldLines} +${header[3]},${newLines} @@${header[5]}`;
+      correctedHunks++;
+    }
+  }
+
+  return {
+    patch: lines.join('\n'),
+    correctedHunks,
+  };
+}
+
 export async function upsertFileByPatch(patch, dirPath) {
   const rootDir = resolveRootDir(dirPath);
-  const patches = parsePatch(patch);
+  const normalized = normalizePatchHunkCounts(patch);
+  const patches = parsePatch(normalized.patch);
   const results = [];
 
   for (const patchItem of patches) {

@@ -351,7 +351,7 @@ async function handleQQCallback(req, res) {
 }
 
 // 保留 QQ 互联当前已登记的地址，同时提供与微信一致的命名方式。
-app.get('/oauth/callback', handleQQCallback);
+// app.get('/oauth/callback', handleQQCallback);
 app.get('/auth/qq/callback', handleQQCallback);
 
 /** 获取腾讯云对象存储临时密钥 */

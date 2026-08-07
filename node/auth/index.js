@@ -166,7 +166,7 @@ export async function login(account, password) {
  */
 export async function getUserProfile(userId) {
   const [rows] = await connection.query(
-    'SELECT id, account, nickname, qq_openid, wx_openid FROM users WHERE id = ?',
+    'SELECT id, account, nickname,avatar,qq_openid, wx_openid FROM users WHERE id = ?',
     [userId]
   );
 
@@ -179,6 +179,7 @@ export async function getUserProfile(userId) {
     id: user.id,
     account: user.account,
     nickname: user.nickname,
+    avatar: user.avatar,
     bindings: {
       qq: Boolean(user.qq_openid),
       wechat: Boolean(user.wx_openid),
