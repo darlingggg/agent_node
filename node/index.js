@@ -3,10 +3,10 @@ import cors from 'cors';
 import { fileURLToPath } from 'url';
 import resCC from './middleware/resCC.js';
 import authJWT from './middleware/authJWT.js';
-import { register, login, refreshAccessToken, logout, getUserProfile } from './auth/index.js';
+import { register, login, refreshAccessToken, logout, getUserProfile, updateUserProfile } from './auth/index.js';
 import { buildWechatOAuthUrl, loginWithWechatCode, verifyWechatServerSignature } from './auth/wechat.js';
 import { buildQQOAuthUrl, loginWithQQCode } from './auth/qq.js';
-import { OAuthSessionStore } from './auth/oauthSession.js';
+import { normalizeOAuthReturnUrl, OAuthSessionStore } from './auth/oauthSession.js';
 import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta, importFilesToPublic, deletePublicAsset, resolvePublicAssetFile } from './file/index.js';
 import multer from 'multer';
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject,
@@ -39,7 +39,7 @@ const oauthErrorPage = fileURLToPath(new URL('./auth/pages/oauth-error.html', im
 // 接口返回 JSON，关闭 ETag 避免浏览器缓存导致 304
 app.set('etag', false);
 
-const allowOrigin = ["http://localhost:5173","https://www.darling.xin"];
+const allowOrigin = ["http://localhost:5173", "https://darling.xin", "https://www.darling.xin"];
 
 // 开启跨域支持，允许所有来源（开发环境）
 app.use(cors({
@@ -151,7 +151,12 @@ function subscribeOAuthEvents(store, req, res) {
   }
 }
 
-function sendOAuthResultPage(res, success) {
+function sendOAuthResultPage(res, success, returnUrl = '') {
+  if (returnUrl) {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.redirect(302, returnUrl);
+  }
+
   res.status(200);
   res.setHeader('Cache-Control', 'no-store');
   res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; frame-ancestors 'none'");
@@ -268,7 +273,8 @@ app.get('/auth/qq/url', (req, res) => {
   let authSession = null;
   try {
     const redirectUri = getQQRedirectUri();
-    authSession = qqAuthSessions.create({ redirectUri });
+    const returnUrl = normalizeOAuthReturnUrl(req.query.returnUrl, allowOrigin);
+    authSession = qqAuthSessions.create({ redirectUri, returnUrl });
     const { state, streamToken, expiresAt } = authSession;
     const authorizeUrl = buildQQOAuthUrl({ redirectUri, state });
     const eventsUrl = getOAuthEventsUrl('qq', state, streamToken);
@@ -317,8 +323,11 @@ async function handleQQCallback(req, res) {
   const state = req.query.state ? String(req.query.state) : '';
   const qqAuth = qqAuthSessions.get(state);
 
-  if (!qqAuth || qqAuth.status !== 'waiting') {
+  if (!qqAuth) {
     return sendOAuthResultPage(res, false);
+  }
+  if (qqAuth.status !== 'waiting') {
+    return sendOAuthResultPage(res, false, qqAuth.returnUrl);
   }
 
   try {
@@ -339,19 +348,19 @@ async function handleQQCallback(req, res) {
       message: 'QQ 登录成功',
       result: { ...result, state },
     });
-    return sendOAuthResultPage(res, true);
+    return sendOAuthResultPage(res, true, qqAuth.returnUrl);
   } catch (err) {
     qqAuthSessions.publish(state, {
       event: 'login_error',
       status: 'error',
       message: err.message,
     });
-    return sendOAuthResultPage(res, false);
+    return sendOAuthResultPage(res, false, qqAuth.returnUrl);
   }
 }
 
 // 保留 QQ 互联当前已登记的地址，同时提供与微信一致的命名方式。
-// app.get('/oauth/callback', handleQQCallback);
+app.get('/oauth/callback', handleQQCallback);
 app.get('/auth/qq/callback', handleQQCallback);
 
 /** 获取腾讯云对象存储临时密钥 */
@@ -414,6 +423,16 @@ app.get('/user/profile', authJWT, async (req, res) => {
   try {
     const profile = await getUserProfile(req.user.id);
     res.cc(0, '获取成功', profile);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 按前端传入的有效字段修改当前登录用户信息 */
+app.patch('/user/profile', authJWT, async (req, res) => {
+  try {
+    const profile = await updateUserProfile(req.user.id, req.body);
+    res.cc(0, '修改成功', profile);
   } catch (err) {
     res.cc(1, err.message);
   }

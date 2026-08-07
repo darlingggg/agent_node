@@ -6,7 +6,7 @@
   "scripts": {
     "start": "PORT=5000 node node/index.js",
     "dev": "nodemon --watch node --watch file --watch Mysql node/index.js",
-    "test": "node --test node/file/index.test.js"
+    "test": "node --test node/file/index.test.js node/auth/index.test.js"
   },
   "keywords": [],
   "author": "",

@@ -18,6 +18,22 @@ function writeSSE(res, payload) {
   res.write(`data: ${JSON.stringify(payload)}\n\n`);
 }
 
+export function normalizeOAuthReturnUrl(value, allowedOrigins) {
+  if (!value) return '';
+
+  let returnUrl;
+  try {
+    returnUrl = new URL(String(value));
+  } catch {
+    throw new Error('OAuth 回跳地址无效');
+  }
+
+  if (!allowedOrigins.includes(returnUrl.origin)) {
+    throw new Error('OAuth 回跳地址不在允许范围内');
+  }
+  return returnUrl.toString();
+}
+
 export class OAuthSessionStore {
   constructor(provider, {
     authTimeoutMs = DEFAULT_AUTH_TIMEOUT_MS,
