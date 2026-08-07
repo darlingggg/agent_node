@@ -921,6 +921,8 @@ export async function deletePublicAsset(filePath, dirPath) {
 }
 
 const HUNK_HEADER_PATTERN = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
+const MAX_PATCH_HUNK_LINES = 120;
+const MAX_PATCH_CHANGE_RATIO = 0.4;
 
 function isPatchBoundary(lines, index) {
   const line = lines[index];
@@ -985,6 +987,49 @@ export function normalizePatchHunkCounts(patch) {
   };
 }
 
+function countTextLines(text) {
+  if (!text) return 0;
+  const lines = text.split(/\r\n|\n|\r/);
+  return lines[lines.length - 1] === '' ? lines.length - 1 : lines.length;
+}
+
+function assertPatchSize(patchItem, oldText, relativePath, isCreate, isDelete) {
+  if (isCreate || isDelete) return;
+
+  let addedLines = 0;
+  let removedLines = 0;
+  let largestHunkLines = 0;
+
+  for (const hunk of patchItem.hunks) {
+    const bodyLines = hunk.lines.filter(line => !line.startsWith('\\')).length;
+    largestHunkLines = Math.max(largestHunkLines, bodyLines);
+
+    for (const line of hunk.lines) {
+      if (line.startsWith('+')) addedLines++;
+      if (line.startsWith('-')) removedLines++;
+    }
+  }
+
+  const sourceLines = countTextLines(oldText);
+  const changedLines = Math.max(addedLines, removedLines);
+  const changeRatio = sourceLines === 0 ? 0 : changedLines / sourceLines;
+
+  if (changeRatio >= MAX_PATCH_CHANGE_RATIO) {
+    const percent = Math.round(changeRatio * 100);
+    throw new Error(
+      `PATCH_TOO_LARGE: ${relativePath} 预计变更 ${percent}%（${changedLines}/${sourceLines} 行），`
+      + `达到 ${MAX_PATCH_CHANGE_RATIO * 100}% 全量写入阈值；请改用 write_file_content 并传入完整文件内容`,
+    );
+  }
+
+  if (largestHunkLines > MAX_PATCH_HUNK_LINES) {
+    throw new Error(
+      `HUNK_TOO_LARGE: ${relativePath} 的单个 hunk 包含 ${largestHunkLines} 行，`
+      + `超过 ${MAX_PATCH_HUNK_LINES} 行限制；请拆成多个小 hunk，每个仅保留 3-5 行上下文`,
+    );
+  }
+}
+
 export async function upsertFileByPatch(patch, dirPath) {
   const rootDir = resolveRootDir(dirPath);
   const normalized = normalizePatchHunkCounts(patch);
@@ -1025,6 +1070,7 @@ export async function upsertFileByPatch(patch, dirPath) {
     }
 
     const oldText = isCreate ? '' : await fs.readFile(fullPath, 'utf-8');
+    assertPatchSize(patchItem, oldText, relativePath, isCreate, isDelete);
     const newText = applyPatch(oldText, patchItem, {
       autoConvertLineEndings: true,
       fuzzFactor: 1,

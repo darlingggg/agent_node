@@ -114,3 +114,59 @@ test('不会吞掉非法的 hunk 正文', () => {
 
   assert.throws(() => normalizePatchHunkCounts(patch), /contained invalid line/);
 });
+
+test('变更达到文件 40% 时拒绝增量更新且不写入文件', async (t) => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-node-patch-ratio-'));
+  t.after(() => fs.rm(rootDir, { recursive: true, force: true }));
+
+  const filePath = path.join(rootDir, 'src', 'ratio.txt');
+  const original = Array.from({ length: 10 }, (_, index) => `line ${index + 1}`).join('\n');
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, original);
+
+  const patch = [
+    '--- a/src/ratio.txt',
+    '+++ b/src/ratio.txt',
+    '@@ -1,5 +1,5 @@',
+    '-line 1',
+    '-line 2',
+    '-line 3',
+    '-line 4',
+    '+changed 1',
+    '+changed 2',
+    '+changed 3',
+    '+changed 4',
+    ' line 5',
+  ].join('\n');
+
+  await assert.rejects(
+    upsertFileByPatch(patch, rootDir),
+    /PATCH_TOO_LARGE:.*40%.*write_file_content/,
+  );
+  assert.equal(await fs.readFile(filePath, 'utf8'), original);
+});
+
+test('单个 hunk 超过 120 行时要求拆分', async (t) => {
+  const rootDir = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-node-patch-hunk-'));
+  t.after(() => fs.rm(rootDir, { recursive: true, force: true }));
+
+  const filePath = path.join(rootDir, 'src', 'large.txt');
+  const sourceLines = Array.from({ length: 200 }, (_, index) => `line ${index + 1}`);
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, sourceLines.join('\n'));
+
+  const body = sourceLines.slice(0, 121).map((line, index) => (
+    index === 60 ? [`-${line}`, '+changed line 61'] : [` ${line}`]
+  )).flat();
+  const patch = [
+    '--- a/src/large.txt',
+    '+++ b/src/large.txt',
+    '@@ -1,121 +1,121 @@',
+    ...body,
+  ].join('\n');
+
+  await assert.rejects(
+    upsertFileByPatch(patch, rootDir),
+    /HUNK_TOO_LARGE:.*122 行.*120 行限制.*拆成多个小 hunk/,
+  );
+});

@@ -43,7 +43,7 @@ export const tools = [
     "type": "function",
     "function": {
       "name": "write_file_content",
-      "description": "写入项目内文件内容，dirPath 由系统自动注入；文件不存在则创建，src 目录下支持自动创建父目录",
+      "description": "创建全新文件，或在预计修改已有文件 40% 及以上、重构文件整体结构时全量写入。content 必须是完整文件内容；小于 40% 的修改应使用 upsert_file。dirPath 由系统自动注入，src/public 下支持自动创建父目录。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -114,7 +114,7 @@ export const tools = [
     "type": "function",
     "function": {
       "name": "upsert_file",
-      "description": "增量更新(修改)文件内容，dirPath 由系统自动注入",
+      "description": "增量更新预计变更不足 40% 的已有文件；每个 hunk 不得超过 120 行并只保留前后各 3-5 行上下文，分散修改应拆成多个 hunk。变更比例超限返回 PATCH_TOO_LARGE，改用 write_file_content；单个 hunk 超限返回 HUNK_TOO_LARGE，拆成多个小 hunk。dirPath 由系统自动注入。",
       "parameters": {
         "type": "object",
         "properties": {
@@ -124,7 +124,7 @@ export const tools = [
           },
           "patch": {
             "type": "string",
-            "description": "用于应用到项目文件的 unified diff 字符串。格式示例：--- a/src/App.vue\\n+++ b/src/App.vue\\n@@ -1,3 +1,3 @@\\n-old line\\n+new line。新增文件用 --- /dev/null 和 +++ b/path；删除文件用 --- a/path 和 +++ /dev/null。patch 中路径必须是项目相对路径并带 a/ 或 b/ 前缀；不得包含绝对路径、../、二进制内容或重命名操作。@@ 头部的旧/新行数必须分别等于正文中上下文与删除/新增行的总数。只包含需要变更的 hunk，不要输出完整文件。"
+            "description": "用于应用到项目文件的 unified diff 字符串。格式示例：--- a/src/App.vue\\n+++ b/src/App.vue\\n@@ -1,3 +1,3 @@\\n-old line\\n+new line。新增文件用 --- /dev/null 和 +++ b/path；删除文件用 --- a/path 和 +++ /dev/null。patch 中路径必须是项目相对路径并带 a/ 或 b/ 前缀；不得包含绝对路径、../、二进制内容或重命名操作。@@ 头部的旧/新行数必须分别等于正文中上下文与删除/新增行的总数。每个 hunk 不得超过 120 行，只保留前后各 3-5 行上下文；预计修改文件 40% 及以上时改用 write_file_content。"
           },
         },
         "required": ["dirPath", "patch"]
