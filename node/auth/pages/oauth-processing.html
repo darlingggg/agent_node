@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light">
+  <meta http-equiv="refresh" content="2">
+  <link rel="icon" href="data:,">
+  <title>正在完成授权</title>
+  <style>
+    :root {
+      color: #17201c;
+      background: #f5f8f6;
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+      font-synthesis: none;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      min-width: 280px;
+      min-height: 100svh;
+      margin: 0;
+      background: #f5f8f6;
+    }
+
+    main {
+      width: min(100%, 480px);
+      min-height: 100svh;
+      margin: 0 auto;
+      padding: max(28px, env(safe-area-inset-top)) 28px max(28px, env(safe-area-inset-bottom));
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+
+    .brand {
+      color: #4e5d55;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0;
+    }
+
+    .result {
+      align-self: center;
+      text-align: center;
+    }
+
+    .mark {
+      width: 76px;
+      height: 76px;
+      margin: 0 auto 28px;
+      border: 3px solid #d7e2dc;
+      border-top-color: #208a57;
+      border-radius: 50%;
+      animation: spin 900ms linear infinite;
+    }
+
+    h1 {
+      margin: 0;
+      color: #17201c;
+      font-size: 30px;
+      font-weight: 750;
+      line-height: 1.2;
+      letter-spacing: 0;
+    }
+
+    .message {
+      max-width: 320px;
+      margin: 14px auto 0;
+      color: #536159;
+      font-size: 16px;
+      line-height: 1.75;
+      letter-spacing: 0;
+    }
+
+    footer {
+      color: #7a8780;
+      font-size: 12px;
+      line-height: 1.5;
+      letter-spacing: 0;
+      text-align: center;
+    }
+
+    @keyframes spin {
+      to {
+        transform: rotate(360deg);
+      }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .mark {
+        animation-duration: 1800ms;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <div class="brand">DARLING.XIN</div>
+    <section class="result" aria-labelledby="result-title">
+      <div class="mark" aria-hidden="true"></div>
+      <h1 id="result-title">正在完成授权</h1>
+      <p class="message">登录信息正在发送到原设备，请稍候。</p>
+    </section>
+    <footer>完成后当前页面会自动更新</footer>
+  </main>
+</body>
+</html>

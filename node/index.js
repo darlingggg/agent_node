@@ -7,6 +7,7 @@ import { register, login, refreshAccessToken, logout, getUserProfile, updateUser
 import { buildWechatOAuthUrl, loginWithWechatCode, verifyWechatServerSignature } from './auth/wechat.js';
 import { buildQQOAuthUrl, loginWithQQCode } from './auth/qq.js';
 import { normalizeOAuthReturnUrl, OAuthSessionStore } from './auth/oauthSession.js';
+import { getOAuthCallbackAction } from './auth/oauthCallback.js';
 import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta, importFilesToPublic, deletePublicAsset, resolvePublicAssetFile } from './file/index.js';
 import multer from 'multer';
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject,
@@ -34,6 +35,7 @@ const contextMap = new Map();
 const wechatAuthSessions = new OAuthSessionStore('wechat');
 const qqAuthSessions = new OAuthSessionStore('qq');
 const oauthSuccessPage = fileURLToPath(new URL('./auth/pages/oauth-success.html', import.meta.url));
+const oauthProcessingPage = fileURLToPath(new URL('./auth/pages/oauth-processing.html', import.meta.url));
 const oauthErrorPage = fileURLToPath(new URL('./auth/pages/oauth-error.html', import.meta.url));
 
 // 接口返回 JSON，关闭 ETag 避免浏览器缓存导致 304
@@ -151,8 +153,15 @@ function subscribeOAuthEvents(store, req, res) {
   }
 }
 
-function sendOAuthResultPage(res, success, returnUrl = '') {
-  if (returnUrl) {
+function sendOAuthResultPage(res, result, returnUrl = '') {
+  const status = result === true ? 'success' : result === false ? 'error' : result;
+  const page = status === 'success'
+    ? oauthSuccessPage
+    : status === 'processing'
+      ? oauthProcessingPage
+      : oauthErrorPage;
+
+  if (returnUrl && status !== 'processing') {
     res.setHeader('Cache-Control', 'no-store');
     return res.redirect(302, returnUrl);
   }
@@ -162,8 +171,8 @@ function sendOAuthResultPage(res, success, returnUrl = '') {
   res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; frame-ancestors 'none'");
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-OAuth-Result', success ? 'success' : 'error');
-  return res.sendFile(success ? oauthSuccessPage : oauthErrorPage);
+  res.setHeader('X-OAuth-Result', status);
+  return res.sendFile(page);
 }
 
 /** 健康检查接口 */
@@ -322,12 +331,16 @@ app.get('/auth/qq/events', (req, res) => {
 async function handleQQCallback(req, res) {
   const state = req.query.state ? String(req.query.state) : '';
   const qqAuth = qqAuthSessions.get(state);
+  const callbackAction = getOAuthCallbackAction(qqAuth);
 
-  if (!qqAuth) {
-    return sendOAuthResultPage(res, false);
+  if (callbackAction === 'error') {
+    return sendOAuthResultPage(res, false, qqAuth?.returnUrl);
   }
-  if (qqAuth.status !== 'waiting') {
-    return sendOAuthResultPage(res, false, qqAuth.returnUrl);
+  if (callbackAction === 'success') {
+    return sendOAuthResultPage(res, true, qqAuth.returnUrl);
+  }
+  if (callbackAction === 'processing') {
+    return sendOAuthResultPage(res, 'processing');
   }
 
   try {

@@ -1,7 +1,7 @@
 import crypto from 'crypto';
 
 const DEFAULT_AUTH_TIMEOUT_MS = 3 * 60 * 1000;
-const DEFAULT_RESULT_RETENTION_MS = 60 * 1000;
+const DEFAULT_RESULT_RETENTION_MS = 3 * 60 * 1000;
 const HEARTBEAT_INTERVAL_MS = 15 * 1000;
 const TERMINAL_STATUSES = new Set(['success', 'error', 'expired']);
 
