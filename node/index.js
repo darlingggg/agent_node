@@ -1,8 +1,13 @@
 import express from 'express';
 import cors from 'cors';
+import { fileURLToPath } from 'url';
 import resCC from './middleware/resCC.js';
 import authJWT from './middleware/authJWT.js';
-import { register, login, refreshAccessToken, logout } from './auth/index.js';
+import { register, login, refreshAccessToken, logout, getUserProfile, updateUserProfile } from './auth/index.js';
+import { buildWechatOAuthUrl, loginWithWechatCode, verifyWechatServerSignature } from './auth/wechat.js';
+import { buildQQOAuthUrl, loginWithQQCode } from './auth/qq.js';
+import { normalizeOAuthReturnUrl, OAuthSessionStore } from './auth/oauthSession.js';
+import { getOAuthCallbackAction } from './auth/oauthCallback.js';
 import { getProjectTempFiles, getFileContent, writeFileContent, copyDir, deleteFileContent, getFileMeta, importFilesToPublic, deletePublicAsset, resolvePublicAssetFile } from './file/index.js';
 import multer from 'multer';
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject,
@@ -15,6 +20,7 @@ import { runAiChat, startChatStream, subscribeChatStream } from './chatStream/in
 import { addSnapshot, getSnapshotList,deleteSnapshot,changeSnapshot,getSnapshotNum,getCurrentVision } from './snapshot/index.js';
 import { buildCommand,deleteOnlineVersion } from './exec/index.js';
 import { getCredential } from './cos/index.js';
+import { QQ_REDIRECT_URI } from '../key.js';
 
 /** 默认服务端口 */
 const PORT = process.env.PORT || 3000;
@@ -26,12 +32,20 @@ const app = express();
 // 创建上下文map
 const contextMap = new Map();
 
+const wechatAuthSessions = new OAuthSessionStore('wechat');
+const qqAuthSessions = new OAuthSessionStore('qq');
+const oauthSuccessPage = fileURLToPath(new URL('./auth/pages/oauth-success.html', import.meta.url));
+const oauthProcessingPage = fileURLToPath(new URL('./auth/pages/oauth-processing.html', import.meta.url));
+const oauthErrorPage = fileURLToPath(new URL('./auth/pages/oauth-error.html', import.meta.url));
+
 // 接口返回 JSON，关闭 ETag 避免浏览器缓存导致 304
 app.set('etag', false);
 
+const allowOrigin = ["http://localhost:5173", "https://darling.xin", "https://www.darling.xin"];
+
 // 开启跨域支持，允许所有来源（开发环境）
 app.use(cors({
-  origin: '*',
+  origin: allowOrigin,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS','PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
@@ -105,10 +119,262 @@ function parseSaveNames(raw) {
   return [String(raw).trim()];
 }
 
+function getExternalOrigin(req) {
+  const forwardedProto = req.get('x-forwarded-proto')?.split(',')[0]?.trim();
+  const forwardedHost = req.get('x-forwarded-host')?.split(',')[0]?.trim();
+  const protocol = forwardedProto || req.protocol;
+  const host = forwardedHost || req.get('host');
+  return `${protocol}://${host}`;
+}
+
+function getWechatRedirectUri(req) {
+  return String(req.query.redirectUri || `${getExternalOrigin(req)}/api/auth/wechat/callback`);
+}
+
+function getQQRedirectUri() {
+  return String(QQ_REDIRECT_URI || '');
+}
+
+function getOAuthEventsUrl(provider, state, streamToken) {
+  const params = new URLSearchParams({ state, streamToken });
+  return `/auth/${provider}/events?${params.toString()}`;
+}
+
+function subscribeOAuthEvents(store, req, res) {
+  const result = store.subscribe({
+    state: String(req.query.state || ''),
+    streamToken: String(req.query.streamToken || ''),
+    req,
+    res,
+  });
+
+  if (!result.ok && !res.headersSent) {
+    res.status(result.status).json({ status: 1, message: result.message, data: null });
+  }
+}
+
+function sendOAuthResultPage(res, result, returnUrl = '') {
+  const status = result === true ? 'success' : result === false ? 'error' : result;
+  const page = status === 'success'
+    ? oauthSuccessPage
+    : status === 'processing'
+      ? oauthProcessingPage
+      : oauthErrorPage;
+
+  if (returnUrl && status !== 'processing') {
+    res.setHeader('Cache-Control', 'no-store');
+    return res.redirect(302, returnUrl);
+  }
+
+  res.status(200);
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; frame-ancestors 'none'");
+  res.setHeader('Referrer-Policy', 'no-referrer');
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-OAuth-Result', status);
+  return res.sendFile(page);
+}
+
 /** 健康检查接口 */
 app.get('/', (req, res) => {
   res.cc(0, 'Express 服务运行正常');
 });
+
+/** 微信测试账号服务器验证 */
+app.get('/wechat', (req, res) => {
+  const { signature, timestamp, nonce, echostr } = req.query;
+
+  if (!verifyWechatServerSignature({ signature, timestamp, nonce })) {
+    res.status(403).type('text/plain').send('Forbidden');
+    return;
+  }
+
+  res.type('text/plain').send(String(echostr || ''));
+});
+
+app.post('/wechat', (req, res) => {
+  res.type('text/plain').send('success');
+});
+
+app.get('/auth/wechat/url', (req, res) => {
+  let authSession = null;
+  try {
+    const redirectUri = getWechatRedirectUri(req);
+    authSession = wechatAuthSessions.create({ redirectUri });
+    const { state, streamToken, expiresAt } = authSession;
+    const authorizeUrl = buildWechatOAuthUrl({ redirectUri, state });
+    const eventsUrl = getOAuthEventsUrl('wechat', state, streamToken);
+    res.cc(0, '获取微信授权链接成功', {
+      authorizeUrl,
+      redirectUri,
+      state,
+      streamToken,
+      eventsUrl,
+      expiresAt,
+    });
+  } catch (err) {
+    if (authSession) wechatAuthSessions.remove(authSession.state);
+    res.cc(1, err.message);
+  }
+});
+
+app.get('/auth/wechat/bind',authJWT,(req,res)=>{
+  const { account } = req.user;
+  let authSession = null;
+  try {
+    const redirectUri = getWechatRedirectUri(req);
+    authSession = wechatAuthSessions.create({ redirectUri, account });
+    const { state, streamToken, expiresAt } = authSession;
+    const authorizeUrl = buildWechatOAuthUrl({ redirectUri, state });
+    const eventsUrl = getOAuthEventsUrl('wechat', state, streamToken);
+    res.cc(0, '获取微信授权链接成功', {
+      authorizeUrl,
+      redirectUri,
+      state,
+      streamToken,
+      eventsUrl,
+      expiresAt,
+    });
+  } catch (err) {
+    if (authSession) wechatAuthSessions.remove(authSession.state);
+    res.cc(1, err.message);
+  }
+})
+
+app.get('/auth/wechat/events', (req, res) => {
+  subscribeOAuthEvents(wechatAuthSessions, req, res);
+});
+
+app.get('/auth/wechat/callback', async (req, res) => {
+  const state = req.query.state ? String(req.query.state) : '';
+  const wechatAuth = wechatAuthSessions.get(state);
+
+  if (!wechatAuth || wechatAuth.status !== 'waiting') {
+    return sendOAuthResultPage(res, false);
+  }
+
+  try {
+    const code = String(req.query.code || '');
+    wechatAuthSessions.publish(state, {
+      event: 'scan_complete',
+      status: 'processing',
+      message: '扫码完成，正在登录...',
+    });
+    const result = await loginWithWechatCode(code,wechatAuth,wechatAuth.account || "");
+    wechatAuthSessions.publish(state, {
+      event: 'login_success',
+      status: 'success',
+      message: '微信登录成功',
+      result: { ...result, state },
+    });
+    return sendOAuthResultPage(res, true);
+  } catch (err) {
+    wechatAuthSessions.publish(state, {
+      event: 'login_error',
+      status: 'error',
+      message: err.message,
+    });
+    return sendOAuthResultPage(res, false);
+  }
+});
+
+app.get('/auth/qq/url', (req, res) => {
+  let authSession = null;
+  try {
+    const redirectUri = getQQRedirectUri();
+    const returnUrl = normalizeOAuthReturnUrl(req.query.returnUrl, allowOrigin);
+    authSession = qqAuthSessions.create({ redirectUri, returnUrl });
+    const { state, streamToken, expiresAt } = authSession;
+    const authorizeUrl = buildQQOAuthUrl({ redirectUri, state });
+    const eventsUrl = getOAuthEventsUrl('qq', state, streamToken);
+    res.cc(0, '获取 QQ 授权链接成功', {
+      authorizeUrl,
+      redirectUri,
+      state,
+      streamToken,
+      eventsUrl,
+      expiresAt,
+    });
+  } catch (err) {
+    if (authSession) qqAuthSessions.remove(authSession.state);
+    res.cc(1, err.message);
+  }
+});
+
+app.get('/auth/qq/bind', authJWT, (req, res) => {
+  const { account } = req.user;
+  let authSession = null;
+  try {
+    const redirectUri = getQQRedirectUri();
+    authSession = qqAuthSessions.create({ redirectUri, account });
+    const { state, streamToken, expiresAt } = authSession;
+    const authorizeUrl = buildQQOAuthUrl({ redirectUri, state });
+    const eventsUrl = getOAuthEventsUrl('qq', state, streamToken);
+    res.cc(0, '获取 QQ 绑定链接成功', {
+      authorizeUrl,
+      redirectUri,
+      state,
+      streamToken,
+      eventsUrl,
+      expiresAt,
+    });
+  } catch (err) {
+    if (authSession) qqAuthSessions.remove(authSession.state);
+    res.cc(1, err.message);
+  }
+});
+
+app.get('/auth/qq/events', (req, res) => {
+  subscribeOAuthEvents(qqAuthSessions, req, res);
+});
+
+async function handleQQCallback(req, res) {
+  const state = req.query.state ? String(req.query.state) : '';
+  const qqAuth = qqAuthSessions.get(state);
+  const callbackAction = getOAuthCallbackAction(qqAuth);
+
+  if (callbackAction === 'error') {
+    return sendOAuthResultPage(res, false, qqAuth?.returnUrl);
+  }
+  if (callbackAction === 'success') {
+    return sendOAuthResultPage(res, true, qqAuth.returnUrl);
+  }
+  if (callbackAction === 'processing') {
+    return sendOAuthResultPage(res, 'processing');
+  }
+
+  try {
+    if (req.query.error) {
+      throw new Error(String(req.query.error_description || req.query.error));
+    }
+
+    const code = String(req.query.code || '');
+    qqAuthSessions.publish(state, {
+      event: 'scan_complete',
+      status: 'processing',
+      message: '扫码完成，正在登录...',
+    });
+    const result = await loginWithQQCode(code, qqAuth, qqAuth.account || '');
+    qqAuthSessions.publish(state, {
+      event: 'login_success',
+      status: 'success',
+      message: 'QQ 登录成功',
+      result: { ...result, state },
+    });
+    return sendOAuthResultPage(res, true, qqAuth.returnUrl);
+  } catch (err) {
+    qqAuthSessions.publish(state, {
+      event: 'login_error',
+      status: 'error',
+      message: err.message,
+    });
+    return sendOAuthResultPage(res, false, qqAuth.returnUrl);
+  }
+}
+
+// 保留 QQ 互联当前已登记的地址，同时提供与微信一致的命名方式。
+app.get('/oauth/callback', handleQQCallback);
+app.get('/auth/qq/callback', handleQQCallback);
 
 /** 获取腾讯云对象存储临时密钥 */
 app.get('/cos/credential', authJWT, async (req, res) => {
@@ -166,8 +432,23 @@ app.post('/auth/logout', async (req, res) => {
 });
 
 /** 获取当前登录用户信息 */
-app.get('/user/profile', authJWT, (req, res) => {
-  res.cc(0, '获取成功', req.user);
+app.get('/user/profile', authJWT, async (req, res) => {
+  try {
+    const profile = await getUserProfile(req.user.id);
+    res.cc(0, '获取成功', profile);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 按前端传入的有效字段修改当前登录用户信息 */
+app.patch('/user/profile', authJWT, async (req, res) => {
+  try {
+    const profile = await updateUserProfile(req.user.id, req.body);
+    res.cc(0, '修改成功', profile);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
 });
 
 /** 拷贝文件夹到指定目录 */

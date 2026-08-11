@@ -4,9 +4,9 @@ import { addSnapshot } from '../snapshot/index.js';
 import connection from '../../Mysql/index.js';
 import fs from 'fs/promises';
 import path from 'path';
-// const rootDir = '/www/wwwroot/ai_agent';
+const rootDir = '/www/wwwroot/ai_agent';
 // const rootDir = 'C:/pro_self';
-const rootDir = 'C:/ai';
+// const rootDir = 'C:/ai';
 
 /** 项目类型对应的模板目录相对路径 */
 const typeToPath = {

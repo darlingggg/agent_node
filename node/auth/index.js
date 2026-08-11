@@ -21,6 +21,80 @@ const SALT_ROUNDS = 10;
 /** 昵称默认值，未传时使用账号 */
 const DEFAULT_NICKNAME = (account) => account;
 
+const USER_ACCOUNT_TABLES = ['projects', 'sessions', 'log', 'snapshots'];
+
+function hasOwn(object, key) {
+  return Object.prototype.hasOwnProperty.call(object, key);
+}
+
+function validTrimmedString(value, maxLength) {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (!trimmed || Array.from(trimmed).length > maxLength) return null;
+  return trimmed;
+}
+
+/**
+ * 过滤用户资料更新参数。未传字段不处理，无效字段记录后忽略。
+ * qq/wx 仅接受 false，避免空值或表单异常导致意外解绑。
+ */
+export function normalizeUserProfileInput(body) {
+  const input = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+  const values = {};
+  const ignoredFields = [];
+
+  if (hasOwn(input, 'account')) {
+    const account = validTrimmedString(input.account, 50);
+    if (account) values.account = account;
+    else ignoredFields.push('account');
+  }
+
+  if (hasOwn(input, 'password')) {
+    const password = typeof input.password === 'string' ? input.password : '';
+    const passwordLength = Array.from(password).length;
+    const passwordBytes = Buffer.byteLength(password, 'utf8');
+    if (password.trim() && passwordLength >= 6 && passwordBytes <= 72) {
+      values.password = password;
+    } else {
+      ignoredFields.push('password');
+    }
+  }
+
+  if (hasOwn(input, 'currentPassword')) {
+    const currentPassword = typeof input.currentPassword === 'string' ? input.currentPassword : '';
+    const currentPasswordBytes = Buffer.byteLength(currentPassword, 'utf8');
+    if (currentPassword && currentPasswordBytes <= 72) {
+      values.currentPassword = currentPassword;
+    } else {
+      ignoredFields.push('currentPassword');
+    }
+  }
+
+  if (hasOwn(input, 'avatar')) {
+    const avatar = validTrimmedString(input.avatar, 2048);
+    if (avatar) values.avatar = avatar;
+    else ignoredFields.push('avatar');
+  }
+
+  if (hasOwn(input, 'nickname')) {
+    const nickname = validTrimmedString(input.nickname, 20);
+    if (nickname) values.nickname = nickname;
+    else ignoredFields.push('nickname');
+  }
+
+  if (hasOwn(input, 'qq')) {
+    if (input.qq === false) values.qqOpenid = null;
+    else ignoredFields.push('qq');
+  }
+
+  if (hasOwn(input, 'wx')) {
+    if (input.wx === false) values.wxOpenid = null;
+    else ignoredFields.push('wx');
+  }
+
+  return { values, ignoredFields };
+}
+
 /**
  * 生成 Access Token（JWT）
  * @param {object} payload 载荷数据
@@ -68,7 +142,7 @@ async function saveRefreshToken(userId, refreshToken) {
  * @param {object} user 用户信息 { id, account, nickname }
  * @returns {Promise<{id: number, account: string, nickname: string, accessToken: string, refreshToken: string}>}
  */
-async function issueTokenPair(user) {
+export async function issueTokenPair(user) {
   const accessToken = createAccessToken({
     id: user.id,
     account: user.account,
@@ -157,6 +231,166 @@ export async function login(account, password) {
     account: user.account,
     nickname: user.nickname,
   });
+}
+
+/**
+ * 获取当前用户的公开资料与第三方账号绑定状态。
+ * openid 只用于服务端关联，不返回给前端。
+ * @param {number} userId 用户 ID
+ */
+export async function getUserProfile(userId) {
+  const [rows] = await connection.query(
+    'SELECT id, account, nickname,avatar,qq_openid, wx_openid FROM users WHERE id = ?',
+    [userId]
+  );
+
+  if (rows.length === 0) {
+    throw new Error('用户不存在');
+  }
+
+  const user = rows[0];
+  return {
+    id: user.id,
+    account: user.account,
+    nickname: user.nickname,
+    avatar: user.avatar,
+    bindings: {
+      qq: Boolean(user.qq_openid),
+      wechat: Boolean(user.wx_openid),
+    },
+  };
+}
+
+/**
+ * 按请求中提供的有效字段更新当前用户资料。
+ * 修改账号时同步迁移所有以 account 作为归属键的数据。
+ * @param {number} userId 当前用户 ID
+ * @param {object} body 前端更新参数
+ */
+export async function updateUserProfile(userId, body) {
+  const { values, ignoredFields } = normalizeUserProfileInput(body);
+  const passwordChangeRequested = body && typeof body === 'object' && hasOwn(body, 'password');
+
+  if (passwordChangeRequested && !hasOwn(values, 'password')) {
+    throw new Error('新密码格式不正确');
+  }
+  if (passwordChangeRequested && !hasOwn(values, 'currentPassword')) {
+    throw new Error('请输入原密码');
+  }
+
+  const db = await connection.getConnection();
+  const updatedFields = [];
+  let shouldRotateTokens = false;
+
+  try {
+    await db.beginTransaction();
+
+    const [rows] = await db.query(
+      'SELECT id, account, nickname, avatar, password, qq_openid, wx_openid FROM users WHERE id = ? FOR UPDATE',
+      [userId]
+    );
+
+    if (rows.length === 0) {
+      throw new Error('用户不存在');
+    }
+
+    const current = rows[0];
+    const assignments = [];
+    const params = [];
+
+    if (passwordChangeRequested) {
+      const currentPasswordMatches = await bcrypt.compare(values.currentPassword, current.password);
+      if (!currentPasswordMatches) {
+        throw new Error('原密码错误');
+      }
+      assignments.push('password = ?');
+      params.push(await bcrypt.hash(values.password, SALT_ROUNDS));
+      updatedFields.push('password');
+      shouldRotateTokens = true;
+    }
+
+    if (hasOwn(values, 'nickname') && values.nickname !== current.nickname) {
+      assignments.push('nickname = ?');
+      params.push(values.nickname);
+      updatedFields.push('nickname');
+    }
+
+    if (hasOwn(values, 'avatar') && values.avatar !== current.avatar) {
+      assignments.push('avatar = ?');
+      params.push(values.avatar);
+      updatedFields.push('avatar');
+    }
+
+    if (hasOwn(values, 'qqOpenid') && current.qq_openid !== null) {
+      assignments.push('qq_openid = NULL');
+      updatedFields.push('qq');
+    }
+
+    if (hasOwn(values, 'wxOpenid') && current.wx_openid !== null) {
+      assignments.push('wx_openid = NULL');
+      updatedFields.push('wx');
+    }
+
+    if (assignments.length > 0) {
+      await db.query(
+        `UPDATE users SET ${assignments.join(', ')} WHERE id = ?`,
+        [...params, userId]
+      );
+    }
+
+    if (hasOwn(values, 'account') && values.account !== current.account) {
+      const [accountRows] = await db.query(
+        'SELECT id FROM users WHERE account = ? AND id <> ? LIMIT 1',
+        [values.account, userId]
+      );
+
+      if (accountRows.length > 0) {
+        ignoredFields.push('account');
+      } else {
+        try {
+          await db.query('UPDATE users SET account = ? WHERE id = ?', [values.account, userId]);
+          for (const table of USER_ACCOUNT_TABLES) {
+            await db.query(`UPDATE ${table} SET account = ? WHERE account = ?`, [values.account, current.account]);
+          }
+          updatedFields.push('account');
+          shouldRotateTokens = true;
+        } catch (error) {
+          if (error.code === 'ER_DUP_ENTRY') {
+            ignoredFields.push('account');
+          } else {
+            throw error;
+          }
+        }
+      }
+    }
+
+    if (shouldRotateTokens) {
+      await db.query(
+        'UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0',
+        [userId]
+      );
+    }
+
+    await db.commit();
+  } catch (error) {
+    await db.rollback();
+    throw error;
+  } finally {
+    db.release();
+  }
+
+  const profile = await getUserProfile(userId);
+  const tokenPair = shouldRotateTokens ? await issueTokenPair(profile) : null;
+
+  return {
+    ...profile,
+    updatedFields,
+    ignoredFields: [...new Set(ignoredFields)],
+    ...(tokenPair ? {
+      accessToken: tokenPair.accessToken,
+      refreshToken: tokenPair.refreshToken,
+    } : {}),
+  };
 }
 
 /**

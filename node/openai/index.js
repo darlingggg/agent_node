@@ -111,8 +111,19 @@ function buildSystemPrompt(projectDirPath) {
 4. Canvas 中 drawImage 外部图片前，先用 new Image() 并设置 img.crossOrigin = 'anonymous'
 5. 项目内本地资源不受此限制,项目中的图片统一放在项目根目录下的public目录下
 
+## 文件操作规则
+1. 修改已有文件前，必须先使用 get_file_list 和 get_file_content 查看最新项目结构与文件内容。
+2. 创建全新文件，或预计修改已有文件 40% 及以上、重构文件整体结构时，必须使用 write_file_content 并传入完整文件内容。
+3. 预计修改已有文件不足 40% 时，必须使用 upsert_file；每个 hunk 正文不得超过 120 行，只保留修改点前后各 3-5 行上下文，分散的修改必须拆成多个小 hunk，禁止用一个 hunk 覆盖整个文件。
+4. 直接删除文件时使用 delete_file；delete_file 仅允许删除 src 或 public 目录下的文件。
+5. upsert_file 的 patch 必须使用项目相对路径，并带 a/ 与 b/ 前缀；新增文件使用 --- /dev/null，删除文件使用 +++ /dev/null；@@ 头部的旧/新行数必须分别等于正文中上下文与删除/新增行的总数；不要输出完整文件内容。
+6. 如果 upsert_file 返回 PATCH_TOO_LARGE，必须改用 write_file_content；如果返回 HUNK_TOO_LARGE，必须重新读取文件并拆成多个小 hunk；其他失败必须重新读取最新文件并生成修正后的小 patch，禁止直接切换为全量覆盖写入。
+
 # Disable Change
 禁止修改项目下的agent_base项目底座下的所有文件，新增删除修改都不允许。当用户指定修改agent_base项目底座下的文件时，提示没有权限进行修改。
+
+# Language
+在回答用户问题时，必须使用中文回答。
 
 # Expertise Integration
 在编写任何 UI 或逻辑代码时，必须严格遵循以下 [Master Skills] 规范，以确保产品具备顶级的视觉审美和交互体验。
@@ -140,7 +151,7 @@ function bindProjectDirPath(name, args, projectDirPath) {
   const bound = { ...args }
   bound.dirPath = projectDirPath
 
-  if (name !== 'get_file_content' && name !== 'write_file_content' && name !== 'download_file') return bound
+  if (name !== 'get_file_content' && name !== 'write_file_content' && name !== 'delete_file' && name !== 'download_file') return bound
 
   const filePath = String(args.path || '').trim()
   if (!filePath) return bound
