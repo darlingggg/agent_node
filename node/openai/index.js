@@ -13,15 +13,30 @@ const client = new OpenAI({
     baseURL: baseURL,
 })
 
-/** token 编码器（用于估算上下文长度） */
+/**
+ * Token 估算器。实际消耗优先使用模型返回的 usage；这里只用于上下文阈值判断和 usage 缺失时兜底。
+ * 当前编码器与 CHAT_MODEL 不完全一致，因此 countContextTokens 的结果是近似值。
+ */
 const tokenizer = encodingForModel('gpt-4')
+/** 主对话与摘要压缩使用的模型。 */
+const CHAT_MODEL = process.env.AI_CHAT_MODEL || 'deepseek-v4-pro'
+/** 应用侧声明的上下文预算；它不会改变上游模型自身的上下文能力。 */
+const CONTEXT_LIMIT_TOKENS = Math.max(Number(process.env.AI_CONTEXT_LIMIT_TOKENS) || 1_000_000, 4096)
+/** 达到上下文预算的该比例后尝试压缩。 */
+const CONTEXT_COMPRESSION_RATIO = Math.min(Math.max(Number(process.env.AI_CONTEXT_COMPRESSION_RATIO) || 0.8, 0.5), 0.95)
+const CONTEXT_COMPRESSION_THRESHOLD = Math.floor(CONTEXT_LIMIT_TOKENS * CONTEXT_COMPRESSION_RATIO)
+/** 历史摘要允许生成的最大 Token 数。 */
+const SUMMARY_MAX_TOKENS = Math.max(Number(process.env.AI_SUMMARY_MAX_TOKENS) || 1600, 256)
+/** 压缩时始终保留的最近用户轮次数。 */
+const RECENT_USER_TURNS_TO_KEEP = Math.max(Number(process.env.AI_RECENT_TURNS_TO_KEEP) || 3, 1)
 
 /**
- * 统计 messages 上下文的 token 数量
- * @param {Array} context 对话上下文
- * @returns {number}
+ * 估算 messages 上下文长度，覆盖文本、工具调用参数和 tool_call_id 等字段。
+ * 该值用于压缩阈值和 currentContextTokens，不等同于模型服务返回的实际计费用量。
+ * @param {Array<object>} context OpenAI messages 结构的上下文数组
+ * @returns {number} 估算 Token 数
  */
-function countContextTokens(context) {
+export function countContextTokens(context) {
   let total = 0
   for (const msg of context) {
     total += 4
@@ -41,6 +56,164 @@ function countContextTokens(context) {
   }
   total += 2
   return total
+}
+
+/**
+ * 创建一次完整用户请求共用的用量统计器。
+ * 所有工具递归、视觉分析和摘要调用都累加到同一对象，最终只结算一次。
+ * @param {Array<object>} context 加入本轮用户消息前的上下文
+ * @returns {object} 本轮可变统计状态
+ */
+const createUsageTracker = (context) => ({
+  promptTokens: 0,
+  completionTokens: 0,
+  contextTokensBefore: countContextTokens(context),
+  currentContextTokens: 0,
+  modelCalls: 0,
+  estimated: false,
+  compressed: false,
+  summary: null,
+  summarizedUntilSessionId: null,
+  assistantText: '',
+})
+
+/**
+ * 将一次模型调用的 usage 累加到本轮统计器。
+ * 模型未返回 usage 时采用调用前准备的估算值，并将整轮标记为 estimated。
+ * @param {object} tracker 本轮共享的用量统计器
+ * @param {object|null|undefined} usage 模型返回的 usage
+ * @param {number} fallbackPromptTokens 输入 Token 兜底估算值
+ * @param {number} fallbackCompletionTokens 输出 Token 兜底估算值
+ * @returns {void}
+ */
+const addUsage = (tracker, usage, fallbackPromptTokens, fallbackCompletionTokens) => {
+  const hasUsage = usage && Number.isFinite(Number(usage.prompt_tokens)) && Number.isFinite(Number(usage.completion_tokens))
+  tracker.promptTokens += hasUsage ? Number(usage.prompt_tokens) : fallbackPromptTokens
+  tracker.completionTokens += hasUsage ? Number(usage.completion_tokens) : fallbackCompletionTokens
+  tracker.modelCalls += 1
+  if (!hasUsage) tracker.estimated = true
+}
+
+/**
+ * 移除仅供服务端追踪摘要范围的内部字段，生成可安全发送给模型的 messages。
+ * @param {Array<object>} context 带 _sessionId 等内部元数据的上下文
+ * @returns {Array<object>} 仅包含模型 API 支持字段的消息数组
+ */
+const toApiMessages = (context) => context.map(({ role, content, tool_calls, tool_call_id, name }) => ({
+  role,
+  content,
+  ...(tool_calls ? { tool_calls } : {}),
+  ...(tool_call_id ? { tool_call_id } : {}),
+  ...(name ? { name } : {}),
+}))
+
+/** 创建统一的用户取消异常，供上层区分 cancelled 与 failed。 */
+const abortError = () => Object.assign(new Error('生成已取消'), { name: 'AbortError' })
+
+/**
+ * 在模型调用和工具执行边界检查取消信号。
+ * @param {AbortSignal|undefined} signal 当前生成任务的取消信号
+ * @throws {Error} signal 已取消时抛出 name=AbortError 的异常
+ */
+const throwIfAborted = (signal) => {
+  if (signal?.aborted) throw abortError()
+}
+
+/**
+ * 找到历史压缩的结束下标：system prompt 不参与压缩，并保留最近若干个用户轮次。
+ * @param {Array<object>} context 当前完整上下文
+ * @returns {number} 作为 context.slice(1, cutoff) 结束位置的下标；-1 表示暂无可压缩历史
+ */
+function findCompressionCutoff(context) {
+  const userIndexes = []
+  for (let i = 1; i < context.length; i += 1) {
+    if (context[i].role === 'user') userIndexes.push(i)
+  }
+  if (userIndexes.length <= RECENT_USER_TURNS_TO_KEEP) return -1
+  return userIndexes[userIndexes.length - RECENT_USER_TURNS_TO_KEEP]
+}
+
+/**
+ * 当上下文达到阈值时，把较早历史总结成一条累计摘要并原地替换旧消息。
+ * 摘要调用本身的 Token 会计入 tracker；成功后记录摘要覆盖到的最大 sessions.id，供重启恢复。
+ * 压缩状态通过 context_compress_start/done/error 事件实时通知前端，摘要正文不会通过 SSE 暴露。
+ * @param {Array<object>} context 会被原地修改的当前上下文
+ * @param {object} tracker 本轮共享的用量统计器
+ * @param {AbortSignal|undefined} signal 当前生成任务的取消信号
+ * @param {(event: object) => void} onEvent SSE 事件回调
+ * @returns {Promise<void>}
+ */
+async function compressContext(context, tracker, signal, onEvent) {
+  const beforeTokens = countContextTokens(context)
+  if (beforeTokens < CONTEXT_COMPRESSION_THRESHOLD) return
+
+  const cutoff = findCompressionCutoff(context)
+  if (cutoff <= 1) return
+
+  const oldMessages = context.slice(1, cutoff)
+  const existingMarker = oldMessages.reduce(
+    (max, item) => Math.max(max, Number(item._summarizedUntilSessionId) || Number(item._sessionId) || 0),
+    0
+  )
+  const summaryInput = oldMessages.map(({ role, content, tool_calls }) => ({ role, content, tool_calls }))
+  const summaryPrompt = `请将以下历史对话压缩成一份可供后续编程助手继续工作的中文摘要。必须保留：用户目标、已确认决策、已修改文件、关键代码/API、工具执行结果、未完成事项和约束。不要添加原对话中不存在的信息。\n\n${JSON.stringify(summaryInput)}`
+  const promptMessages = [
+    { role: 'system', content: '你负责压缩编程会话上下文，只输出结构化、事实准确的摘要。' },
+    { role: 'user', content: summaryPrompt },
+  ]
+  const fallbackPromptTokens = countContextTokens(promptMessages)
+  throwIfAborted(signal)
+  onEvent({
+    event: 'context_compress_start',
+    data: {
+      beforeTokens,
+      thresholdTokens: CONTEXT_COMPRESSION_THRESHOLD,
+      contextLimit: CONTEXT_LIMIT_TOKENS,
+    },
+  })
+
+  let response
+  try {
+    response = await client.chat.completions.create({
+      model: CHAT_MODEL,
+      messages: promptMessages,
+      max_tokens: SUMMARY_MAX_TOKENS,
+    }, { signal })
+  } catch (error) {
+    onEvent({
+      event: 'context_compress_error',
+      data: { message: error?.message || '上下文压缩失败' },
+    })
+    throw error
+  }
+  const summary = response.choices?.[0]?.message?.content?.trim()
+  if (!summary) {
+    onEvent({
+      event: 'context_compress_error',
+      data: { message: '压缩模型未返回摘要' },
+    })
+    return
+  }
+
+  const fallbackCompletionTokens = tokenizer.encode(summary).length
+  addUsage(tracker, response.usage, fallbackPromptTokens, fallbackCompletionTokens)
+  const summaryMessage = {
+    role: 'system',
+    content: `【历史对话压缩摘要】\n${summary}`,
+    _isSummary: true,
+    _summarizedUntilSessionId: existingMarker || null,
+  }
+  context.splice(1, cutoff - 1, summaryMessage)
+  tracker.compressed = true
+  tracker.summary = summary
+  tracker.summarizedUntilSessionId = existingMarker || tracker.summarizedUntilSessionId
+  onEvent({
+    event: 'context_compress_done',
+    data: {
+      beforeTokens,
+      afterTokens: countContextTokens(context),
+    },
+  })
 }
 
 /** 本地默认系统提示词文件路径 */
@@ -244,47 +417,91 @@ ${instruction}`;
 }
 
 /**
- * 与 AI 对话，并通过 onEvent 向前台推送事件
- * @param {string} userMessage 用户消息
- * @param {(event: object) => void} onEvent 事件回调
- * @param {Array} context 对话上下文
- * @param {string} projectDirPath 后台项目根目录，工具执行时强制使用
+ * 执行一次主模型请求，并在模型返回 tool_calls 时执行工具后递归继续。
+ * 同一完整用户请求内的所有递归调用共享 context、tracker 和 signal；只有首次调用会添加用户消息和分析图片。
+ * @param {string} userMessage 主模型使用的完整用户消息，通常包含项目背景
+ * @param {(event: object) => void} onEvent 文本、工具、视觉和压缩状态事件回调
+ * @param {Array<object>} context 会被原地追加消息或压缩的对话上下文
+ * @param {string} projectDirPath 工具执行时强制绑定的项目根目录
+ * @param {string[]} imageUrls 首次调用需要分析的图片地址；工具递归时为空数组
+ * @param {string} prompt 用户原始指令，用于视觉分析等场景
+ * @param {object} tracker 整轮对话共享的用量统计器
+ * @param {AbortSignal|undefined} signal 当前生成任务的取消信号
+ * @param {boolean} appendUserMessage 是否把本轮用户消息追加到 context，仅首次调用为 true
+ * @param {number|string|null} userSessionId 本轮用户消息对应的 sessions.id
+ * @param {number|string|null} assistantSessionId 本轮 assistant 消息对应的 sessions.id
+ * @returns {Promise<void>} 所有工具递归和最终回复完成后返回
  */
-export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(msg)}, context=message, projectDirPath="", imageUrls=[], prompt="") {
+async function runChat(userMessage, onEvent, context, projectDirPath, imageUrls, prompt, tracker, signal, appendUserMessage, userSessionId=null, assistantSessionId=null) {
+  throwIfAborted(signal)
   let ImageResponse = ""
-  if (context.length > 0 && context[0].role === 'system') context[0].content = buildSystemPrompt(projectDirPath)
 
   if (Array.isArray(imageUrls) && imageUrls.length > 0) {
     onEvent({ event: 'vision_start', data: null })
-    const result = await describeImage(prompt || userMessage, imageUrls, onEvent)
+    const result = await describeImage(prompt || userMessage, imageUrls, onEvent, signal)
     ImageResponse = result?.response ?? ""
+    addUsage(
+      tracker,
+      result?.usage,
+      tokenizer.encode(`${prompt || userMessage}\n${JSON.stringify(imageUrls)}`).length,
+      tokenizer.encode(`${result?.reasoning || ''}${ImageResponse}`).length
+    )
     if (ImageResponse) onEvent({ event: 'vision_done', data: ImageResponse })
   }
 
   const toolCallsMap = {}
   let assistantText = ""
 
-  if (userMessage || prompt) {
+  if (appendUserMessage && (userMessage || prompt)) {
     const content = buildUserContent(ImageResponse, userMessage, prompt);
-    context.push({ role: "user", content });
+    context.push({ role: "user", content, _sessionId: userSessionId });
   }
 
+  await compressContext(context, tracker, signal, onEvent)
+  const apiMessages = toApiMessages(context)
+  const fallbackPromptTokens = countContextTokens(apiMessages)
+
   const stream = await client.chat.completions.create({
-    model: "deepseek-v4-pro",
-    messages: context,
+    model: CHAT_MODEL,
+    messages: apiMessages,
     tools: tools,
     tool_choice: "auto",
     stream: true,
-  })
+    stream_options: { include_usage: true },
+  }, { signal })
 
-  for await (let chunk of stream) {
-    const delta = chunk.choices[0].delta
+  let requestUsage = null
+  let requestSettled = false
+  try {
+    for await (const chunk of stream) {
+      if (chunk.usage) requestUsage = chunk.usage
+      if (!chunk.choices?.length) continue
+      const delta = chunk.choices[0].delta
 
-    if (delta.content) {
-      assistantText += delta.content
-      onEvent({ event: 'text', data: delta.content })
+      if (delta.content) {
+        assistantText += delta.content
+        tracker.assistantText += delta.content
+        onEvent({ event: 'text', data: delta.content })
+      }
+      if (delta.tool_calls) mergeToolCallDeltas(toolCallsMap, delta.tool_calls)
     }
-    if (delta.tool_calls) mergeToolCallDeltas(toolCallsMap, delta.tool_calls)
+    const fallbackCompletionTokens = countContextTokens([{
+      role: 'assistant',
+      content: assistantText || null,
+      tool_calls: Object.values(toolCallsMap),
+    }])
+    addUsage(tracker, requestUsage, fallbackPromptTokens, fallbackCompletionTokens)
+    requestSettled = true
+  } catch (error) {
+    if (!requestSettled) {
+      const fallbackCompletionTokens = countContextTokens([{
+        role: 'assistant',
+        content: assistantText || null,
+        tool_calls: Object.values(toolCallsMap),
+      }])
+      addUsage(tracker, requestUsage, fallbackPromptTokens, fallbackCompletionTokens)
+    }
+    throw error
   }
 
   const toolCalls = Object.keys(toolCallsMap)
@@ -302,20 +519,109 @@ export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(
       for (const key of keys) args[key] = originArgs[key]
       const boundArgs = bindProjectDirPath(name, args, projectDirPath)
       onEvent({ event: 'tool_start', data: `正在执行工具: ${name} $$ 参数: ${JSON.stringify(boundArgs)}` })
+      throwIfAborted(signal)
       const result = await functionMap[name](boundArgs)
+      throwIfAborted(signal)
       context.push({ role: "tool", content: result, tool_call_id: id })
       onEvent({ event: 'tool_end', data: `工具执行完毕: ${name} $$ 结果: ${result}` })
     }
-    await chat("", onEvent, context, projectDirPath, [], prompt)
+    await runChat("", onEvent, context, projectDirPath, [], prompt, tracker, signal, false, null, assistantSessionId)
   } else if (assistantText) {
-    context.push({ role: "assistant", content: assistantText })
-    const tokenCount = countContextTokens(context)
-    console.log(`[上下文] 当前 token 数: ${tokenCount}，消息条数: ${context.length}`)
+    context.push({ role: "assistant", content: assistantText, _sessionId: assistantSessionId })
   }
 }
 
-export async function keepContext(account,projectId,title) {
-  const [res] = await connection.query('select * from sessions where account = ? and project_id = ? and title = ? ', [account,projectId,title]);
+/**
+ * 在一整轮生成结束后移除仅供当前推理使用的 tool/tool_calls 消息。
+ * 本轮所有已推送文本会合并到最终 assistant 消息，使热缓存结构与数据库恢复后的消息结构尽量一致。
+ * @param {Array<object>} context 会被原地整理的上下文
+ * @param {number|string|null} assistantSessionId 最终 assistant 消息对应的 sessions.id
+ * @param {string} assistantText 本轮所有模型调用产生的可见文本
+ * @returns {void}
+ */
+function pruneCompletedToolContext(context, assistantSessionId, assistantText) {
+  const retained = context.filter((item) => item.role !== 'tool' && !item.tool_calls)
+  const finalAssistant = retained[retained.length - 1]
+  if (finalAssistant?.role === 'assistant') {
+    finalAssistant.content = assistantText || finalAssistant.content
+    finalAssistant._sessionId = assistantSessionId || finalAssistant._sessionId
+  } else if (assistantText) {
+    retained.push({ role: 'assistant', content: assistantText, _sessionId: assistantSessionId })
+  }
+  context.splice(0, context.length, ...retained)
+}
+
+/**
+ * 完成一次从用户输入到最终回复、失败或取消的完整 AI 对话任务。
+ * 该外层入口负责初始化 system prompt 和 tracker、启动工具递归、整理最终上下文，并返回整轮汇总 usage。
+ * 失败或取消时不会吞掉异常，而是把已产生的部分用量放到 error.chatUsage，供流管理层继续结算。
+ * @param {string} userMessage 主模型使用的完整用户消息
+ * @param {(event: object) => void} onEvent 流式事件回调
+ * @param {Array<object>} context 会被原地更新的会话上下文
+ * @param {string} projectDirPath 当前项目根目录
+ * @param {string[]} imageUrls 本轮用户上传的图片地址
+ * @param {string} prompt 用户原始指令
+ * @param {{signal?: AbortSignal, userSessionId?: number|string, assistantSessionId?: number|string}} options 任务取消信号与消息 ID
+ * @returns {Promise<object>} 本轮输入/输出 Token、调用次数、压缩状态和最终上下文长度
+ * @throws {Error} 模型、工具或取消异常；已产生的用量位于 error.chatUsage
+ */
+export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(msg)}, context=message, projectDirPath="", imageUrls=[], prompt="", options={}) {
+  if (context.length > 0 && context[0].role === 'system') context[0].content = buildSystemPrompt(projectDirPath)
+  const tracker = createUsageTracker(context)
+  try {
+    await runChat(
+      userMessage,
+      onEvent,
+      context,
+      projectDirPath,
+      imageUrls,
+      prompt,
+      tracker,
+      options.signal,
+      true,
+      options.userSessionId,
+      options.assistantSessionId
+    )
+    pruneCompletedToolContext(context, options.assistantSessionId, tracker.assistantText)
+    tracker.currentContextTokens = countContextTokens(context)
+    const result = {
+      ...tracker,
+      totalTokens: tracker.promptTokens + tracker.completionTokens,
+      contextLimit: CONTEXT_LIMIT_TOKENS,
+    }
+    delete result.assistantText
+    return result
+  } catch (error) {
+    pruneCompletedToolContext(context, options.assistantSessionId, tracker.assistantText)
+    tracker.currentContextTokens = countContextTokens(context)
+    error.chatUsage = {
+      ...tracker,
+      totalTokens: tracker.promptTokens + tracker.completionTokens,
+      contextLimit: CONTEXT_LIMIT_TOKENS,
+    }
+    delete error.chatUsage.assistantText
+    throw error
+  }
+}
+
+/**
+ * 从数据库恢复会话消息。存在累计摘要时，只读取摘要覆盖位置之后的 sessions 记录。
+ * assistant/vision 正文存放在 messages 表，因此查询后会按 message_id 回填 content。
+ * @param {string} account 会话所属账号
+ * @param {number|string} projectId 项目 ID
+ * @param {string} title 旧版兼容查询使用的会话标题
+ * @param {number|string|null} conversationId 稳定会话 ID，存在时优先按它查询
+ * @param {number|string|null} summarizedUntilSessionId 已被摘要覆盖到的最大 sessions.id
+ * @returns {Promise<{result: Array<object>, length: number}>} 按 sessions.id 升序排列的未压缩消息
+ */
+export async function keepContext(account,projectId,title,conversationId=null,summarizedUntilSessionId=null) {
+  const params = conversationId
+    ? [account, projectId, conversationId, Number(summarizedUntilSessionId) || 0]
+    : [account, projectId, title]
+  const sql = conversationId
+    ? 'select * from sessions where account = ? and project_id = ? and conversation_id = ? and id > ? order by id asc'
+    : 'select * from sessions where account = ? and project_id = ? and title = ? order by id asc'
+  const [res] = await connection.query(sql, params);
   if(res.length === 0) return {result:res,length:res.length}
   for(const item of res){
     if(item.message_id){

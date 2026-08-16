@@ -127,6 +127,63 @@ ALTER TABLE users ADD UNIQUE INDEX uk_users_wx_openid (wx_openid);
 -- 头像 URL 可能包含较长的微信/QQ CDN 查询参数，已有数据库执行一次
 ALTER TABLE users MODIFY COLUMN avatar VARCHAR(2048) DEFAULT '' COMMENT '用户头像';
 
--- QQ 互联登录：上线前执行一次
+-- QQ 互联登录
 ALTER TABLE users ADD COLUMN qq_openid VARCHAR(64) NULL COMMENT '关联 QQ openid';
 ALTER TABLE users ADD UNIQUE INDEX uk_users_qq_openid (qq_openid);
+
+-- AI token 汇总与持久化上下文：上线前按顺序执行一次 ================================
+-- sessions 当前实际存储消息，conversation_id 将消息归属到稳定的会话记录。
+ALTER TABLE sessions MODIFY COLUMN title VARCHAR(100) NULL COMMENT '会话标题';
+
+CREATE TABLE conversations (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '会话ID',
+    account VARCHAR(50) NOT NULL COMMENT '用户账号',
+    project_id INT NOT NULL COMMENT '关联项目ID',
+    title VARCHAR(100) NOT NULL COMMENT '会话标题',
+    status VARCHAR(20) NOT NULL DEFAULT 'active' COMMENT 'active/deleted',
+    prompt_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '会话累计输入token',
+    completion_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '会话累计输出token',
+    total_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '会话累计总token',
+    current_context_tokens INT NOT NULL DEFAULT 0 COMMENT '当前持久化上下文长度',
+    context_limit INT NOT NULL DEFAULT 0 COMMENT '当前模型上下文上限',
+    summary MEDIUMTEXT NULL COMMENT '自动压缩后的历史摘要',
+    summarized_until_session_id BIGINT NULL COMMENT '摘要已覆盖到的sessions.id',
+    last_compressed_at TIMESTAMP NULL COMMENT '最后压缩时间',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_conversations_owner_title (account, project_id, title),
+    INDEX idx_conversations_project (account, project_id),
+    INDEX idx_conversations_updated (account, updated_at)
+) COMMENT 'AI会话汇总及持久化上下文';
+
+ALTER TABLE sessions
+  ADD COLUMN conversation_id BIGINT NULL COMMENT '关联conversations.id',
+  ADD COLUMN usage_settled TINYINT NOT NULL DEFAULT 0 COMMENT '本轮token是否已结算';
+
+CREATE INDEX idx_sessions_conversation ON sessions (conversation_id, id);
+
+ALTER TABLE projects
+  ADD COLUMN ai_prompt_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '项目累计AI输入token',
+  ADD COLUMN ai_completion_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '项目累计AI输出token',
+  ADD COLUMN ai_total_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '项目累计AI总token';
+
+-- 将已有的按标题会话迁移到 conversations；历史 token 无法追溯，累计值从 0 开始。
+INSERT INTO conversations (account, project_id, title, status)
+SELECT account,
+       project_id,
+       title,
+       IF(title REGEXP '_delete_[0-9]{10}$', 'deleted', 'active')
+FROM sessions
+WHERE title IS NOT NULL
+GROUP BY account, project_id, title;
+
+UPDATE sessions s
+JOIN conversations c
+  ON c.account = s.account
+ AND c.project_id = s.project_id
+ AND c.title = s.title
+SET s.conversation_id = c.id
+WHERE s.conversation_id IS NULL;
+
+-- 历史消息不存在可结算的运行态 usage，标记为已结算；新建消息仍使用字段默认值 0。
+UPDATE sessions SET usage_settled = 1 WHERE conversation_id IS NOT NULL;

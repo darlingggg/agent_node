@@ -7,6 +7,135 @@ const DELETE_TITLE_SUFFIX = () => `_delete_${String(Date.now()).slice(-10)}`;
 const DELETED_TITLE_REGEXP = '_delete_[0-9]{10}$';
 
 /**
+ * 获取当前账号、项目和标题对应的会话汇总记录；不存在时原子创建。
+ * LAST_INSERT_ID(id) 让新增和命中唯一键两种情况都能通过 insertId 取得稳定 conversationId。
+ * @param {{projectId: number|string, title: string}} params 会话所属项目和标题
+ * @param {{account: string}} user 当前登录用户
+ * @returns {Promise<object>} conversations 表中的完整会话记录
+ */
+export const getOrCreateConversation = async ({ projectId, title }, user) => {
+  const account = user.account;
+  const [result] = await connection.query(
+    `insert into conversations (account, project_id, title)
+     values (?, ?, ?)
+     on duplicate key update id = last_insert_id(id), updated_at = current_timestamp`,
+    [account, projectId, title]
+  );
+  const id = result.insertId;
+  const [rows] = await connection.query(
+    'select * from conversations where id = ? and account = ? limit 1',
+    [id, account]
+  );
+  return rows[0];
+}
+
+/**
+ * 查询当前会话累计 Token、当前上下文长度和摘要状态。
+ * 优先使用 conversationId；旧前端也可以使用 projectId + title 定位。
+ * @param {{conversationId?: number|string, projectId?: number|string, title?: string}} params 会话定位参数
+ * @param {{account: string}} user 当前登录用户，用于数据隔离
+ * @returns {Promise<object>} 供前端展示的会话统计信息
+ * @throws {Error} 会话不存在或不属于当前账号
+ */
+export const getConversationStats = async ({ conversationId, projectId, title }, user) => {
+  const conditions = ['account = ?'];
+  const params = [user.account];
+  if (conversationId) {
+    conditions.push('id = ?');
+    params.push(conversationId);
+  } else {
+    conditions.push('project_id = ?', 'title = ?');
+    params.push(projectId, title);
+  }
+  const [rows] = await connection.query(
+    `select id, project_id as projectId, title,
+            prompt_tokens as promptTokens,
+            completion_tokens as completionTokens,
+            total_tokens as totalTokens,
+            current_context_tokens as currentContextTokens,
+            context_limit as contextLimit,
+            summary is not null as summaryExists,
+            last_compressed_at as lastCompressedAt,
+            created_at as createdAt,
+            updated_at as updatedAt
+     from conversations where ${conditions.join(' and ')} limit 1`,
+    params
+  );
+  if (rows.length === 0) throw new Error('会话不存在');
+  return rows[0];
+}
+
+/**
+ * 在一次完整生成完成、失败或取消后，统一结算会话和项目累计 Token。
+ * 事务首先把 assistant sessions 记录从 usage_settled=0 改为 1；只有首次成功修改才能继续累计，避免回调重试导致重复计数。
+ * 会话/项目 Token 使用原子加法累计，current_context_tokens、摘要正文和摘要覆盖位置使用本轮最新状态覆盖。
+ * @param {object} params 结算参数
+ * @param {number|string} params.conversationId 会话 ID
+ * @param {number|string} params.projectId 项目 ID
+ * @param {number|string} params.assistantSessionId 本轮 assistant 对应的 sessions.id
+ * @param {object|undefined} params.usage chat 返回或 error.chatUsage 携带的本轮汇总用量
+ * @returns {Promise<{settled: boolean, conversation: object|null}>} 是否首次结算及结算后的会话汇总
+ * @throws {Error} 会话/项目不存在或事务更新失败
+ */
+export const settleConversationUsage = async ({ conversationId, projectId, assistantSessionId, usage }) => {
+  const db = await connection.getConnection();
+  try {
+    await db.beginTransaction();
+    const [settled] = await db.query(
+      `update sessions set usage_settled = 1
+       where id = ? and conversation_id = ? and usage_settled = 0`,
+      [assistantSessionId, conversationId]
+    );
+    if (settled.affectedRows !== 1) {
+      await db.rollback();
+      const [rows] = await connection.query('select * from conversations where id = ? limit 1', [conversationId]);
+      return { settled: false, conversation: rows[0] || null };
+    }
+
+    const promptTokens = Math.max(Number(usage?.promptTokens) || 0, 0);
+    const completionTokens = Math.max(Number(usage?.completionTokens) || 0, 0);
+    const totalTokens = promptTokens + completionTokens;
+    const contextTokens = Math.max(Number(usage?.currentContextTokens) || 0, 0);
+    const contextLimit = Math.max(Number(usage?.contextLimit) || 0, 0);
+    const [conversationUpdate] = await db.query(
+      `update conversations
+       set prompt_tokens = prompt_tokens + ?,
+           completion_tokens = completion_tokens + ?,
+           total_tokens = total_tokens + ?,
+           current_context_tokens = ?,
+           context_limit = ?,
+           summary = coalesce(?, summary),
+           summarized_until_session_id = coalesce(?, summarized_until_session_id),
+           last_compressed_at = if(? = 1, current_timestamp, last_compressed_at)
+       where id = ?`,
+      [
+        promptTokens, completionTokens, totalTokens, contextTokens, contextLimit,
+        usage?.summary || null, usage?.summarizedUntilSessionId || null,
+        usage?.compressed ? 1 : 0, conversationId,
+      ]
+    );
+    if (conversationUpdate.affectedRows !== 1) throw new Error('会话 token 结算失败：会话不存在');
+    const [projectUpdate] = await db.query(
+      `update projects
+       set ai_prompt_tokens = ai_prompt_tokens + ?,
+           ai_completion_tokens = ai_completion_tokens + ?,
+           ai_total_tokens = ai_total_tokens + ?
+       where id = ?`,
+      [promptTokens, completionTokens, totalTokens, projectId]
+    );
+    if (projectUpdate.affectedRows !== 1) throw new Error('项目 token 结算失败：项目不存在');
+    await db.commit();
+    const [rows] = await connection.query('select * from conversations where id = ? limit 1', [conversationId]);
+    return { settled: true, conversation: rows[0] || null };
+  } catch (error) {
+    await db.rollback();
+    throw error;
+  } finally {
+    db.release();
+  }
+}
+
+/**
  * 校验同一用户、同一项目下是否已有未删除的同名会话。
  * 软删除的会话会被排除，避免旧记录阻塞重新创建同名会话。
  */
@@ -26,6 +155,10 @@ const ensureSessionTitleAvailable = async (account, projectId, title) => {
 export const markProjectSessionsDeleted = async (projectId, account) => {
   const suffix = DELETE_TITLE_SUFFIX();
   await connection.query(
+    'UPDATE conversations SET title = CONCAT(title, ?), status = ? WHERE project_id = ? AND account = ? AND status = ?',
+    [suffix, 'deleted', projectId, account, 'active']
+  );
+  await connection.query(
     'UPDATE sessions SET title = CONCAT(title, ?) WHERE project_id = ? AND account = ? AND title NOT REGEXP ?',
     [suffix, projectId, account, DELETED_TITLE_REGEXP]
   );
@@ -37,8 +170,9 @@ export const createSession = async (body, user) => {
   const title = body.title || content.slice(0, 30);
   const account = user.account;
 
-  const [res] = await connection.query('select * from projects where id = ?', [projectId]);
+  const [res] = await connection.query('select * from projects where id = ? and account = ?', [projectId, account]);
   if(res.length === 0) throw new Error('项目不存在');
+  const conversation = await getOrCreateConversation({ projectId, title }, user);
 
   // await ensureSessionTitleAvailable(account, projectId, title);
 
@@ -49,32 +183,32 @@ export const createSession = async (body, user) => {
     );
     const messageId = res1.insertId;
     const [res2] = await connection.query(
-      'insert into sessions (title, role, project_id, message_id,account) VALUES (?, ?, ?, ?, ?)',
-      [title, role, projectId, messageId, account]
+      'insert into sessions (title, role, project_id, message_id,account,conversation_id) VALUES (?, ?, ?, ?, ?, ?)',
+      [title, role, projectId, messageId, account, conversation.id]
     );
     return { id: res2.insertId,content: '创建成功' };
   }
 
   const [res2] = await connection.query(
-    'insert into sessions (title, role, project_id, content,account) VALUES (?, ?, ?, ?, ?)',
-    [title, role, projectId, content, account]
+    'insert into sessions (title, role, project_id, content,account,conversation_id) VALUES (?, ?, ?, ?, ?, ?)',
+    [title, role, projectId, content, account, conversation.id]
   );
   return { id: res2.insertId,content: '创建成功' };
 }
 
 /** 创建用户会话消息，不检查 title 唯一性，供后端托管 AI 流式对话使用 */
-export const createUserChatSession = async ({ title, projectId, content }, user) => {
+export const createUserChatSession = async ({ title, projectId, content, conversationId }, user) => {
   const account = user.account;
   // 用户消息是已经输入完成的内容，直接标记为 completed。
   const [result] = await connection.query(
-    'insert into sessions (title, role, project_id, content, account, status) VALUES (?, ?, ?, ?, ?, ?)',
-    [title || content.slice(0, 30), 'user', projectId, content, account, 'completed']
+    'insert into sessions (title, role, project_id, content, account, status, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [title || content.slice(0, 30), 'user', projectId, content, account, 'completed', conversationId]
   );
   return { id: result.insertId };
 }
 
 /** 创建正在生成中的 assistant 消息，并预先分配 messageId */
-export const createStreamingAssistantSession = async ({ title, projectId }, user) => {
+export const createStreamingAssistantSession = async ({ title, projectId, conversationId }, user) => {
   const account = user.account;
   // assistant 内容会边生成边写入 messages，这里先插入空消息拿到 messageId。
   const [messageResult] = await connection.query(
@@ -84,8 +218,8 @@ export const createStreamingAssistantSession = async ({ title, projectId }, user
   const messageId = messageResult.insertId;
   // sessions 只保存 message_id 引用，实际内容存放在 messages 表中。
   const [sessionResult] = await connection.query(
-    'insert into sessions (title, role, project_id, message_id, account, status) VALUES (?, ?, ?, ?, ?, ?)',
-    [title, 'assistant', projectId, messageId, account, 'streaming']
+    'insert into sessions (title, role, project_id, message_id, account, status, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    [title, 'assistant', projectId, messageId, account, 'streaming', conversationId]
   );
   return { sessionId: sessionResult.insertId, messageId };
 }
@@ -117,6 +251,10 @@ export const updateSession = async (body, user) => {
     'update sessions set title = ? where title = ? and project_id = ? and account = ?',
     [title,oldTitle,projectId,account]
   );
+  await connection.query(
+    'update conversations set title = ? where title = ? and project_id = ? and account = ? and status = ?',
+    [title, oldTitle, projectId, account, 'active']
+  );
   return { content: '修改成功',affectedRows: result.affectedRows || 0 };
 }
 
@@ -128,6 +266,10 @@ export const deleteSession = async (body, user) => {
   const [result] = await connection.query(
     'update sessions set title = concat(title, ?) where title = ? and project_id = ? and account = ?',
     [suffix, title, projectId, account]
+  );
+  await connection.query(
+    'update conversations set title = concat(title, ?), status = ? where title = ? and project_id = ? and account = ?',
+    [suffix, 'deleted', title, projectId, account]
   );
   return { content: '删除成功', affectedRows: result.affectedRows || 0 };
 }

@@ -23,9 +23,15 @@ const systemPrompt = `
 简洁性：不要口水话，直接输出技术特征。如果不确定，请回复'无法通过图片确定具体参数'，禁止反复纠正。`
 
 /**
- * 视觉理解测试入口：流式输出思考过程与正式回复
+ * 调用视觉模型分析用户图片，并把思考过程和正式回答以事件形式向主对话流转发。
+ * 返回的 usage 会由主对话 tracker 累加；signal 用于用户终止时取消当前视觉请求。
+ * @param {string} prompt 用户原始指令
+ * @param {string|string[]} imageUrls 一张或多张图片地址
+ * @param {(event: object) => void} onEvent 视觉分析流式事件回调
+ * @param {AbortSignal|undefined} signal 当前生成任务的取消信号
+ * @returns {Promise<{reasoning: string, response: string, usage: object|null}>} 完整视觉分析、正式回答和模型用量
  */
-export async function describeImage(prompt, imageUrls,onEvent=(msg)=>{process.stdout.write(msg)}) {
+export async function describeImage(prompt, imageUrls,onEvent=(msg)=>{process.stdout.write(msg)}, signal=undefined) {
   let promptImageUrl = []
   if(Array.isArray(imageUrls)) promptImageUrl = imageUrls.map(url => ({ type: "image_url", image_url: { url } }))
   else promptImageUrl = [{ type: "image_url", image_url: { url: imageUrls } }]
@@ -48,20 +54,16 @@ export async function describeImage(prompt, imageUrls,onEvent=(msg)=>{process.st
       enable_thinking: ENABLE_THINKING,
       thinking_budget: THINKING_BUDGET,
       stream_options: { include_usage: true },
-    })
+    }, { signal })
 
     const reasoningParts = []
     const contentParts = []
+    let usage = null
     let isAnswering = false
 
     for await (const chunk of stream) {
+      if (chunk.usage) usage = chunk.usage
       if (!chunk.choices?.length) {
-        // if (chunk.usage) {
-        //   console.log('\n--- 请求用量 ---')
-        //   console.log(`输入 Tokens: ${chunk.usage.prompt_tokens}`)
-        //   console.log(`输出 Tokens: ${chunk.usage.completion_tokens}`)
-        //   console.log(`总计 Tokens: ${chunk.usage.total_tokens}`)
-        // }
         continue
       }
 
@@ -85,7 +87,7 @@ export async function describeImage(prompt, imageUrls,onEvent=(msg)=>{process.st
     onEvent({event: 'visual_done', data: null})
     const fullReasoning = reasoningParts.join("")
     const fullResponse = contentParts.join("")
-    return { reasoning: fullReasoning, response: fullResponse }
+    return { reasoning: fullReasoning, response: fullResponse, usage }
 
     // if (fullReasoning) {
     //   console.log(`\n--- 完整思考 ---\n${fullReasoning}`)

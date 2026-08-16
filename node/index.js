@@ -13,10 +13,11 @@ import multer from 'multer';
 import { createProject, getProjectList, deleteProject,updateProject,getProjectInfo,buildProject,
   getLatestTemplateVersion,getCurrentProjectTemplateVersion,updateProjectTemplateVersion,getAllTemplateVersionFiles } from './project/index.js';
 import { createSession, createUserChatSession, createStreamingAssistantSession, getSessionList,
-  updateSession,deleteSession,getSessionDetail } from './session/index.js';
+  updateSession,deleteSession,getSessionDetail,getOrCreateConversation,getConversationStats,
+  settleConversationUsage } from './session/index.js';
 import { addLog, getLogList } from './log/index.js';
 import { keepContext,message } from './openai/index.js';
-import { runAiChat, startChatStream, subscribeChatStream } from './chatStream/index.js';
+import { runAiChat, startChatStream, subscribeChatStream, cancelChatStream } from './chatStream/index.js';
 import { addSnapshot, getSnapshotList,deleteSnapshot,changeSnapshot,getSnapshotNum,getCurrentVision } from './snapshot/index.js';
 import { buildCommand,deleteOnlineVersion } from './exec/index.js';
 import { getCredential } from './cos/index.js';
@@ -724,6 +725,35 @@ app.get('/session/detail',authJWT, async (req, res) => {
   }
 });
 
+/** 获取会话累计 token 与当前上下文长度。 */
+app.get('/conversation/stats', authJWT, async (req, res) => {
+  const { conversationId, projectId, title } = req.query;
+  if (!conversationId && (!projectId || !title)) return res.cc(1, 'conversationId 或 projectId + title 不能为空');
+  try {
+    const result = await getConversationStats({ conversationId, projectId, title }, req.user);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 获取项目累计 token。 */
+app.get('/project/usage', authJWT, async (req, res) => {
+  const { projectId } = req.query;
+  if (!projectId) return res.cc(1, '项目id不能为空');
+  try {
+    const project = await getProjectInfo(projectId, req.user);
+    res.cc(0, '获取成功', {
+      projectId: project.id,
+      promptTokens: Number(project.ai_prompt_tokens) || 0,
+      completionTokens: Number(project.ai_completion_tokens) || 0,
+      totalTokens: Number(project.ai_total_tokens) || 0,
+    });
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
 /** 与AI对话（SSE 流式） */
 app.post('/chat/stream', authJWT, async (req, res) => {
   const { prompt, projectId, title, imageUrls = [] } = req.body
@@ -731,26 +761,54 @@ app.post('/chat/stream', authJWT, async (req, res) => {
   if (!projectId) return res.cc(1, '操作项目不能为空')
 
   const sessionTitle = title || prompt.slice(0, 30)
-  const contextKey = `${req.user.account}-${projectId}-${sessionTitle}`
-  let context = [...message]
+  let context = message.map(item => ({ ...item }))
 
   try {
+    const projectInfo = await getProjectInfo(projectId, req.user)
+    const conversation = await getOrCreateConversation({ projectId, title: sessionTitle }, req.user)
+    const contextKey = String(conversation.id)
     // 获取上下文历史记录
     if (sessionTitle && !contextMap.has(contextKey)) {
-      const { result } = await keepContext(req.user.account, projectId, sessionTitle)
-      const history = result.map(item => ({ role: item.role === "vision" ? "user" : item.role, content: item.content }))
+      const { result } = await keepContext(
+        req.user.account,
+        projectId,
+        sessionTitle,
+        conversation.id,
+        conversation.summarized_until_session_id
+      )
+      const history = result.map(item => ({
+        role: item.role === "vision" ? "user" : item.role,
+        content: item.content,
+        _sessionId: item.id,
+      }))
+      if (conversation.summary) {
+        history.unshift({
+          role: 'system',
+          content: `【历史对话压缩摘要】\n${conversation.summary}`,
+          _isSummary: true,
+          _summarizedUntilSessionId: conversation.summarized_until_session_id,
+        })
+      }
       context = context.concat(history)
       contextMap.set(contextKey, history)
     } else if (sessionTitle && contextMap.has(contextKey)) {
       context = context.concat(contextMap.get(contextKey))
     }
 
-    const projectInfo = await getProjectInfo(projectId, req.user)
     const dirPath = projectInfo.dir_path
     const projectTitle = projectInfo.title ?? ""
     const desc = projectInfo.desc ?? ""
-    const userSession = await createUserChatSession({ title: sessionTitle, projectId, content: prompt }, req.user)
-    const assistantSession = await createStreamingAssistantSession({ title: sessionTitle, projectId }, req.user)
+    const userSession = await createUserChatSession({
+      title: sessionTitle,
+      projectId,
+      content: prompt,
+      conversationId: conversation.id,
+    }, req.user)
+    const assistantSession = await createStreamingAssistantSession({
+      title: sessionTitle,
+      projectId,
+      conversationId: conversation.id,
+    }, req.user)
 
     res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
     res.setHeader('Cache-Control', 'no-cache')
@@ -764,6 +822,7 @@ app.post('/chat/stream', authJWT, async (req, res) => {
         userSessionId: userSession.id,
         assistantSessionId: assistantSession.sessionId,
         assistantMessageId: assistantSession.messageId,
+        conversationId: conversation.id,
       }
     })}\n\n`)
 
@@ -771,9 +830,43 @@ app.post('/chat/stream', authJWT, async (req, res) => {
     startChatStream({
       messageId: assistantSession.messageId,
       sessionId: assistantSession.sessionId,
-      run: (send) => runAiChat(content, send, context, dirPath, imageUrls, prompt),
-      onComplete: async () => {
-        if (sessionTitle) contextMap.set(contextKey, context.filter(msg => msg.role !== 'system'))
+      run: (send, signal) => runAiChat(content, send, context, dirPath, imageUrls, prompt, {
+        signal,
+        userSessionId: userSession.id,
+        assistantSessionId: assistantSession.sessionId,
+      }),
+      onSettled: async (usage, status) => {
+        const result = await settleConversationUsage({
+          conversationId: conversation.id,
+          projectId,
+          assistantSessionId: assistantSession.sessionId,
+          usage,
+        })
+        const stats = result.conversation
+        if (status !== 'completed') contextMap.delete(contextKey)
+        return {
+          status,
+          turn: {
+            promptTokens: Number(usage?.promptTokens) || 0,
+            completionTokens: Number(usage?.completionTokens) || 0,
+            totalTokens: Number(usage?.totalTokens) || 0,
+            modelCalls: Number(usage?.modelCalls) || 0,
+            estimated: Boolean(usage?.estimated),
+            compressed: Boolean(usage?.compressed),
+          },
+          conversation: stats ? {
+            promptTokens: Number(stats.prompt_tokens) || 0,
+            completionTokens: Number(stats.completion_tokens) || 0,
+            totalTokens: Number(stats.total_tokens) || 0,
+            currentContextTokens: Number(stats.current_context_tokens) || 0,
+            contextLimit: Number(stats.context_limit) || 0,
+          } : null,
+        }
+      },
+      onComplete: async (_content, _usage, { settlementFailed } = {}) => {
+        if (!sessionTitle) return
+        if (settlementFailed) contextMap.delete(contextKey)
+        else contextMap.set(contextKey, context.slice(1))
       },
     })
     await subscribeChatStream({
@@ -790,6 +883,18 @@ app.post('/chat/stream', authJWT, async (req, res) => {
     res.cc(1, err.message);
   }
 })
+
+/** 主动终止当前 AI 生成。 */
+app.post('/chat/messages/:messageId/cancel', authJWT, async (req, res) => {
+  const { messageId } = req.params;
+  if (!messageId) return res.cc(1, 'messageId 不能为空');
+  try {
+    const result = await cancelChatStream({ messageId, account: req.user.account });
+    res.cc(0, result.cancelled ? '正在终止生成' : '生成任务已结束', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
 
 app.get('/chat/messages/:messageId/stream', authJWT, async (req, res) => {
   const { messageId } = req.params
@@ -814,71 +919,6 @@ app.get('/chat/messages/:messageId/stream', authJWT, async (req, res) => {
       res.write(`data: ${JSON.stringify({ event: 'error', data: err.message })}\n\n`)
       res.end()
     }
-  }
-})
-
-app.post('/chat/stream/legacy-unused', authJWT, async (req, res) => {
-  const { prompt, projectId,title,imageUrls=[] } = req.body
-  if (!prompt) return res.cc(1, '发送消息为空')
-  if (!projectId) return res.cc(1, '操作项目为空')
-
-  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
-  res.setHeader('Cache-Control', 'no-cache')
-  res.setHeader('Connection', 'keep-alive')
-  res.setHeader('X-Accel-Buffering', 'no')
-  res.flushHeaders?.()
-
-  let clientClosed = false
-
-  /** 推送 SSE 事件，格式与 chat 保持一致：{ event, data } */
-  const send = (msg) => {
-    if (clientClosed || res.writableEnded) return
-    res.write(`data: ${JSON.stringify(msg)}\n\n`)
-  }
-
-  /**
-   * 客户端在响应完成前断开时标记关闭，停止继续写入
-   * 注意：不要用 req.on('close')，POST 请求体读完后也会触发，会导致连接立刻被关掉
-   */
-  res.on('close', () => {
-    if (res.writableEnded) return
-    clientClosed = true
-  })
-  
-  const contextKey = `${req.user.account}-${projectId}-${title}`
-  let context = [...message]
-
-  if (title && !contextMap.has(contextKey)) {
-    const { result } = await keepContext(req.user.account, projectId, title)
-    const history = result.map(item => ({ role: item.role==="vision"?"user":item.role, content: item.content }))
-    context = context.concat(history)
-    contextMap.set(contextKey, history)
-  } else if (title && contextMap.has(contextKey)) {
-    context = context.concat(contextMap.get(contextKey))
-  }
-
-  try {
-    const projectInfo = await getProjectInfo(projectId, req.user)
-    const dirPath = projectInfo.dir_path
-    const projectTitle = projectInfo.title ?? ""
-    const desc = projectInfo.desc ?? ""
-    const content = `【用户指令 - 最高优先级，请以此为准】\n${prompt}\n\n【项目背景 - 操作文件时使用】\n项目标题: ${projectTitle}\n项目描述: ${desc}\n项目Path: ${dirPath}\n组件库: vant\nCSS: tailwindcss\n\n注: 所有文件操作必须使用上述项目Path，path 参数用相对路径；看项目效果只需提示用户刷新页面`
-    await runAiChat(content, send, context, dirPath, imageUrls, prompt)
-
-    // 同步更新内存上下文（不含 system，避免重复拼接）
-    if (title) {
-      contextMap.set(contextKey, context.filter(msg => msg.role !== 'system'))
-    }
-
-    if (clientClosed) return
-
-    send({ event: 'done', data: null })
-    res.end()
-  } catch (err) {
-    if (clientClosed) return
-
-    send({ event: 'error', data: err.message })
-    res.end()
   }
 })
 
