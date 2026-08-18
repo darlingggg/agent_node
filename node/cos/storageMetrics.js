@@ -3,7 +3,7 @@ import connection from '../../Mysql/index.js';
 import { getBeijingDateKey } from '../utils/beijingTime.js';
 import { listObjects } from './index.js';
 
-const LOCK_NAME = 'gameAgent:cos-storage-metrics';
+export const STORAGE_METRICS_LOCK_NAME = 'gameAgent:cos-storage-metrics';
 const SYNC_INTERVAL_MS = 60 * 60 * 1000;
 const INITIAL_SYNC_DELAY_MS = 30 * 1000;
 const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.bmp', '.svg']);
@@ -157,7 +157,7 @@ export async function syncStorageMetrics() {
   const db = await connection.getConnection();
   let lockAcquired = false;
   try {
-    const [[lockRow]] = await db.query('SELECT GET_LOCK(?, 0) AS acquired', [LOCK_NAME]);
+    const [[lockRow]] = await db.query('SELECT GET_LOCK(?, 0) AS acquired', [STORAGE_METRICS_LOCK_NAME]);
     lockAcquired = Number(lockRow?.acquired) === 1;
     if (!lockAcquired) return { skipped: true, reason: '已有同步任务正在运行' };
 
@@ -179,7 +179,7 @@ export async function syncStorageMetrics() {
   } finally {
     if (lockAcquired) {
       try {
-        await db.query('SELECT RELEASE_LOCK(?)', [LOCK_NAME]);
+        await db.query('SELECT RELEASE_LOCK(?)', [STORAGE_METRICS_LOCK_NAME]);
       } catch {
         // 连接释放时 MySQL 也会释放命名锁。
       }

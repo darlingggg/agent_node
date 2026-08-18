@@ -1,5 +1,5 @@
 import connection from '../../Mysql/index.js';
-import { getStorageSyncState } from '../cos/storageMetrics.js';
+import { getStorageSyncState, STORAGE_METRICS_LOCK_NAME } from '../cos/storageMetrics.js';
 import { getBeijingDateRange, listBeijingDates } from '../utils/beijingTime.js';
 
 function toNumber(value) {
@@ -23,7 +23,7 @@ export async function getDashboardOverview(days) {
   const [
     [[userSummary]], [[projectSummary]], [[aiSummary]], [[storageSummary]],
     [userTrend], [projectTrend], [aiTrend], [storageTrend],
-    [usersByTokens], [projectsByTokens], [usersByStorage], [roleRows], [typeRows],
+    [usersByTokens], [projectsByTokens], [usersByStorage], [roleRows], [typeRows], [[storageLock]],
   ] = await Promise.all([
     connection.query(
       `SELECT COUNT(*) AS total,
@@ -137,12 +137,14 @@ export async function getDashboardOverview(days) {
     ),
     connection.query('SELECT role, COUNT(*) AS count FROM users GROUP BY role'),
     connection.query('SELECT type, COUNT(*) AS count FROM projects GROUP BY type'),
+    connection.query('SELECT IS_USED_LOCK(?) AS connection_id', [STORAGE_METRICS_LOCK_NAME]),
   ]);
 
   const userDates = rowsByDate(userTrend);
   const projectDates = rowsByDate(projectTrend);
   const aiDates = rowsByDate(aiTrend);
   const storageDates = rowsByDate(storageTrend);
+  const storageSyncState = getStorageSyncState();
   const trends = listBeijingDates(range.startDate, days).map((date) => {
     const user = userDates.get(date) || {};
     const project = projectDates.get(date) || {};
@@ -207,7 +209,11 @@ export async function getDashboardOverview(days) {
     },
     trends,
     rankings: { usersByTokens, projectsByTokens, usersByStorage },
-    storageSync: getStorageSyncState(),
+    storageSync: {
+      ...storageSyncState,
+      running: storageSyncState.running
+        || (storageLock?.connection_id !== null && storageLock?.connection_id !== undefined),
+    },
     generatedAt: new Date(),
   };
 }
