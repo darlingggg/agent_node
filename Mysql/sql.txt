@@ -187,3 +187,86 @@ WHERE s.conversation_id IS NULL;
 
 -- 历史消息不存在可结算的运行态 usage，标记为已结算；新建消息仍使用字段默认值 0。
 UPDATE sessions SET usage_settled = 1 WHERE conversation_id IS NOT NULL;
+
+-- 管理端权限、项目更新时间与软删除：执行一次 ================================
+-- 用户权限：super/admin 可访问管理端，normal 为普通用户，disabled 为禁用用户。
+ALTER TABLE users
+  ADD COLUMN role ENUM('super', 'admin', 'normal', 'disabled')
+  NOT NULL DEFAULT 'normal' COMMENT '用户权限' AFTER avatar;
+
+-- 请将首个管理账号设为 super，再使用管理端接口分配其他管理员。
+-- UPDATE users SET role = 'super' WHERE account = '你的账号';
+
+-- update_time 由项目文件写入、删除、上传、AI patch 及项目资料修改主动更新。
+-- deleted_at 用于软删除；历史上已经物理删除的数据无法通过本字段恢复。
+ALTER TABLE projects
+  ADD COLUMN update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '项目最后更新时间' AFTER created_at,
+  ADD COLUMN deleted_at TIMESTAMP NULL DEFAULT NULL COMMENT '项目删除时间，NULL表示未删除' AFTER update_time;
+
+CREATE INDEX idx_projects_deleted_update
+  ON projects (deleted_at, update_time);
+
+-- 用户 COS 固定目录：执行一次 ==============================================
+-- storage_key 创建后不随 account 修改，用于 uploads/{storage_key}/ 目录。
+ALTER TABLE users
+  ADD COLUMN storage_key VARCHAR(64) NULL COMMENT '用户固定COS目录键' AFTER role;
+
+-- 已有用户沿用执行迁移时的账号目录，确保现有素材仍可访问。
+UPDATE users
+SET storage_key = account
+WHERE storage_key IS NULL OR storage_key = '';
+
+-- 如果某用户改过账号且素材仍在旧目录，请在执行下面的 NOT NULL 前手动修正：
+-- UPDATE users SET storage_key = '旧的桶目录名' WHERE id = 10000;
+
+ALTER TABLE users
+  MODIFY COLUMN storage_key VARCHAR(64) NOT NULL COMMENT '用户固定COS目录键';
+
+CREATE UNIQUE INDEX uk_users_storage_key ON users (storage_key);
+
+-- 管理端运营总览：北京时间活跃、AI日报与COS存储快照（执行一次） ==============
+ALTER TABLE users
+  ADD COLUMN last_login_at TIMESTAMP NULL DEFAULT NULL COMMENT '最后登录时间' AFTER created_at,
+  ADD COLUMN last_active_at TIMESTAMP NULL DEFAULT NULL COMMENT '最后活跃时间' AFTER last_login_at;
+
+CREATE INDEX idx_users_last_active_at ON users (last_active_at);
+
+CREATE TABLE ai_usage_daily (
+  metric_date DATE NOT NULL COMMENT '北京时间统计日期',
+  user_id INT NOT NULL COMMENT '用户ID',
+  project_id INT NOT NULL COMMENT '项目ID',
+  prompt_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '输入Token',
+  completion_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '输出Token',
+  total_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '总Token',
+  model_calls BIGINT NOT NULL DEFAULT 0 COMMENT '模型调用次数',
+  failed_calls BIGINT NOT NULL DEFAULT 0 COMMENT '失败或取消轮次',
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (metric_date, user_id, project_id),
+  INDEX idx_ai_usage_daily_user_date (user_id, metric_date),
+  INDEX idx_ai_usage_daily_project_date (project_id, metric_date)
+) COMMENT 'AI每日用量汇总';
+
+CREATE TABLE user_storage_stats (
+  user_id INT PRIMARY KEY COMMENT '用户ID',
+  storage_key VARCHAR(64) NOT NULL COMMENT '用户固定COS目录键',
+  file_count BIGINT NOT NULL DEFAULT 0 COMMENT '文件数量，不含目录占位对象',
+  total_bytes BIGINT NOT NULL DEFAULT 0 COMMENT '文件总字节数',
+  image_count BIGINT NOT NULL DEFAULT 0 COMMENT '图片数量',
+  video_count BIGINT NOT NULL DEFAULT 0 COMMENT '视频数量',
+  other_count BIGINT NOT NULL DEFAULT 0 COMMENT '其他文件数量',
+  last_synced_at TIMESTAMP NULL DEFAULT NULL COMMENT '最近成功同步时间',
+  sync_status ENUM('never', 'success', 'error') NOT NULL DEFAULT 'never' COMMENT '同步状态',
+  error_message VARCHAR(500) NULL COMMENT '最近同步错误',
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  UNIQUE INDEX uk_user_storage_stats_storage_key (storage_key),
+  INDEX idx_user_storage_stats_total_bytes (total_bytes)
+) COMMENT '用户COS存储汇总';
+
+CREATE TABLE storage_daily_metrics (
+  metric_date DATE PRIMARY KEY COMMENT '北京时间统计日期',
+  file_count BIGINT NOT NULL DEFAULT 0 COMMENT '全站文件数量',
+  total_bytes BIGINT NOT NULL DEFAULT 0 COMMENT '全站文件总字节数',
+  orphan_file_count BIGINT NOT NULL DEFAULT 0 COMMENT '未匹配用户的文件数量',
+  orphan_bytes BIGINT NOT NULL DEFAULT 0 COMMENT '未匹配用户的文件字节数',
+  synced_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '同步完成时间'
+) COMMENT 'COS每日存储快照';

@@ -19,6 +19,7 @@ import { runAiChat, startChatStream, subscribeChatStream, cancelChatStream } fro
 import { addSnapshot, getSnapshotList,deleteSnapshot,changeSnapshot,getCurrentVision } from '../snapshot/index.js';
 import { buildCommand,deleteOnlineVersion } from '../exec/index.js';
 import { getCredential } from '../cos/index.js';
+import { markProjectFileActivity, markUserActive } from '../utils/activity.js';
 import { QQ_REDIRECT_URI } from '../../key.js';
 
 /** 前台接口路由；挂载在根路径以保持现有接口地址不变。 */
@@ -357,8 +358,8 @@ app.get('/auth/qq/callback', handleQQCallback);
 /** 获取腾讯云对象存储临时密钥 */
 app.get('/cos/credential', authJWT, async (req, res) => {
   try {
-    const { account } = req.user;
-    const result = await getCredential(account);
+    const result = await getCredential(req.user.storage_key);
+    await markUserActive(req.user.id);
     res.cc(0, '获取成功', result);
   } catch (err) {
     res.cc(1, err.message);
@@ -469,6 +470,7 @@ app.post('/file/write', async (req, res) => {
     const { dir, path: filePath, content = '' } = req.body;
     if (!filePath) return res.cc(1, 'path 不能为空');
     const result = await writeFileContent(filePath, content, dir);
+    await markProjectFileActivity(dir);
     res.cc(0, '写入成功', result);
   } catch (err) {
     res.cc(1, err.message);
@@ -482,6 +484,7 @@ app.post('/file/delete',async(req,res)=>{
   if(!dir) return res.cc(1, '项目根目录不能为空');
   try {
     const result = await deleteFileContent(filePath, dir);
+    await markProjectFileActivity(dir);
     res.cc(0, '删除成功', result);
   } catch (err) {
     res.cc(1, err.message);
@@ -540,6 +543,7 @@ app.post('/file/download',authJWT, memoryUpload.array('files', 20), async (req, 
     if (failed.length === result.results.length) {
       return res.cc(1, '全部文件处理失败', result);
     }
+    await markProjectFileActivity(dirPath);
     if (failed.length > 0) {
       return res.cc(0, `部分成功，失败 ${failed.length} 个`, result);
     }
@@ -561,6 +565,7 @@ app.post('/file/asset/delete', authJWT, async (req, res) => {
     if (!filePath) return res.cc(1, '文件路径 path 不能为空');
 
     const result = await deletePublicAsset(filePath, dirPath);
+    await markProjectFileActivity(dirPath);
     res.cc(0, '删除成功', result);
   } catch (err) {
     res.cc(1, err.message);
@@ -597,6 +602,7 @@ app.post('/project/create',authJWT, async (req, res) => {
   if(!body.type) return res.cc(1, '类型不能为空');
   try {
     const result = await createProject(req.user, body);
+    await markUserActive(req.user.id);
     res.cc(0, '创建成功', result);
   } catch (err) {
     res.cc(1, err.message);
@@ -618,6 +624,7 @@ app.post('/project/delete',authJWT, async (req, res) => {
   if(!req.body.id) return res.cc(1, 'id 不能为空');
   try {
     const result = await deleteProject(req.body.id, req.user);
+    await markUserActive(req.user.id);
     res.cc(0, '删除成功', result);
   } catch (err) {
     res.cc(1, err.message);
@@ -631,6 +638,7 @@ app.patch('/project/update',authJWT, async (req, res) => {
   if(!body.title) return res.cc(1, '标题不能为空');
   try {
     const result = await updateProject(body, req.user);
+    await markUserActive(req.user.id);
     res.cc(0, '修改成功', result);
   } catch (err) {
     res.cc(1, err.message);
@@ -742,6 +750,7 @@ app.post('/chat/stream', authJWT, async (req, res) => {
 
   try {
     const projectInfo = await getProjectInfo(projectId, req.user)
+    await markUserActive(req.user.id)
     const conversation = await getOrCreateConversation({ projectId, title: sessionTitle }, req.user)
     const contextKey = String(conversation.id)
     // 获取上下文历史记录
@@ -818,6 +827,7 @@ app.post('/chat/stream', authJWT, async (req, res) => {
           projectId,
           assistantSessionId: assistantSession.sessionId,
           usage,
+          status,
         })
         const stats = result.conversation
         if (status !== 'completed') contextMap.delete(contextKey)
@@ -1009,6 +1019,7 @@ app.post('/project/build',authJWT,async(req,res)=>{
     const oldDeploymentId = (await getProjectInfo(projectId,req.user)).cloudflare_id;
     const {id} = await addSnapshot(projectId,'构建'+Math.random().toString(36).substring(2, 15),dir,'',req.user);
     await buildProject(projectId,link,id,deploymentId);
+    await markUserActive(req.user.id);
     if(oldDeploymentId) await deleteOnlineVersion(dir,oldDeploymentId);
     if (clientClosed) return
     res.end()
@@ -1062,6 +1073,7 @@ app.post('/temp/update',authJWT,async(req,res)=>{
   if(!projectId) return res.cc(1, '项目id不能为空');
   try {
     const result = await updateProjectTemplateVersion(projectId,upToVersion,req.user);
+    await markUserActive(req.user.id);
     res.cc(0, '更新成功', result);
   } catch (err) {
     res.cc(1, err.message);

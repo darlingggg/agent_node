@@ -2,6 +2,8 @@ import bcrypt from 'bcryptjs';
 import jwt from 'jsonwebtoken';
 import crypto from 'crypto';
 import connection from '../../Mysql/index.js';
+import { createStorageKey } from '../utils/storageKey.js';
+import { markUserActive } from '../utils/activity.js';
 
 /** JWT 密钥，生产环境请通过环境变量配置 */
 const JWT_SECRET = process.env.JWT_SECRET || 'agentNode_dev_secret';
@@ -139,23 +141,37 @@ async function saveRefreshToken(userId, refreshToken) {
 
 /**
  * 登录/注册成功后签发双 Token
- * @param {object} user 用户信息 { id, account, nickname }
- * @returns {Promise<{id: number, account: string, nickname: string, accessToken: string, refreshToken: string}>}
+ * @param {object} user 用户信息，必须包含 id
+ * @returns {Promise<{id: number, account: string, nickname: string, role: string, accessToken: string, refreshToken: string}>}
  */
-export async function issueTokenPair(user) {
+export async function issueTokenPair(user, { recordLogin = false } = {}) {
+  const [rows] = await connection.query(
+    'SELECT id, account, nickname, role FROM users WHERE id = ? LIMIT 1',
+    [user.id]
+  );
+  if (rows.length === 0) throw new Error('用户不存在');
+
+  const currentUser = rows[0];
+  if (currentUser.role === 'disabled') {
+    throw new Error('账号已被禁用');
+  }
+
   const accessToken = createAccessToken({
-    id: user.id,
-    account: user.account,
-    nickname: user.nickname,
+    id: currentUser.id,
+    account: currentUser.account,
+    nickname: currentUser.nickname,
+    role: currentUser.role,
   });
 
   const refreshToken = generateRefreshToken();
-  await saveRefreshToken(user.id, refreshToken);
+  await saveRefreshToken(currentUser.id, refreshToken);
+  if (recordLogin) await markUserActive(currentUser.id, { login: true });
 
   return {
-    id: user.id,
-    account: user.account,
-    nickname: user.nickname,
+    id: currentUser.id,
+    account: currentUser.account,
+    nickname: currentUser.nickname,
+    role: currentUser.role,
     accessToken,
     refreshToken,
   };
@@ -189,14 +205,15 @@ export async function register(account, password, nickname) {
   }
 
   const hashedPassword = await bcrypt.hash(password, SALT_ROUNDS);
+  const storageKey = createStorageKey();
 
   const [result] = await connection.query(
-    'INSERT INTO users (account, password, nickname) VALUES (?, ?, ?)',
-    [account, hashedPassword, finalNickname]
+    'INSERT INTO users (account, password, nickname, storage_key) VALUES (?, ?, ?, ?)',
+    [account, hashedPassword, finalNickname, storageKey]
   );
 
   const user = { id: result.insertId, account, nickname: finalNickname };
-  return issueTokenPair(user);
+  return issueTokenPair(user, { recordLogin: true });
 }
 
 /**
@@ -230,7 +247,7 @@ export async function login(account, password) {
     id: user.id,
     account: user.account,
     nickname: user.nickname,
-  });
+  }, { recordLogin: true });
 }
 
 /**
@@ -240,7 +257,7 @@ export async function login(account, password) {
  */
 export async function getUserProfile(userId) {
   const [rows] = await connection.query(
-    'SELECT id, account, nickname,avatar,qq_openid, wx_openid FROM users WHERE id = ?',
+    'SELECT id, account, nickname, avatar, qq_openid, wx_openid, role FROM users WHERE id = ?',
     [userId]
   );
 
@@ -254,6 +271,7 @@ export async function getUserProfile(userId) {
     account: user.account,
     nickname: user.nickname,
     avatar: user.avatar,
+    role: user.role,
     bindings: {
       qq: Boolean(user.qq_openid),
       wechat: Boolean(user.wx_openid),
@@ -407,7 +425,7 @@ export async function refreshAccessToken(refreshToken) {
 
   const [rows] = await connection.query(
     `SELECT rt.id, rt.user_id, rt.expires_at, rt.revoked,
-            u.account, u.nickname
+            u.account, u.nickname, u.role
      FROM refresh_tokens rt
      JOIN users u ON u.id = rt.user_id
      WHERE rt.token_hash = ?`,
@@ -428,10 +446,15 @@ export async function refreshAccessToken(refreshToken) {
     throw new Error('Refresh Token 已过期');
   }
 
+  if (record.role === 'disabled') {
+    throw new Error('账号已被禁用');
+  }
+
   const accessToken = createAccessToken({
     id: record.user_id,
     account: record.account,
     nickname: record.nickname,
+    role: record.role,
   });
 
   return { accessToken };

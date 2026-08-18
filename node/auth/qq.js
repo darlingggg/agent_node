@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import connection from '../../Mysql/index.js';
 import { issueTokenPair } from './index.js';
+import { createStorageKey } from '../utils/storageKey.js';
 import { QQ_APP_ID, QQ_APP_KEY } from '../../key.js';
 
 function assertQQOAuthConfig() {
@@ -157,8 +158,10 @@ export async function loginWithQQCode(code, qqAuth, account = '') {
 
     try {
       const [result] = await connection.query(
-        'INSERT INTO users (account, password, nickname, qq_openid, avatar) VALUES (?, ?, ?, ?, ?)',
-        [targetAccount, hashedPassword, nickname, openid, avatar]
+        `INSERT INTO users
+         (account, password, nickname, qq_openid, avatar, storage_key)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [targetAccount, hashedPassword, nickname, openid, avatar, createStorageKey()]
       );
 
       user = { id: result.insertId, account: targetAccount, nickname };
@@ -192,7 +195,7 @@ export async function loginWithQQCode(code, qqAuth, account = '') {
     }
   }
 
-  const tokenPair = await issueTokenPair(user);
+  const tokenPair = await issueTokenPair(user, { recordLogin: !account });
 
   return {
     ...tokenPair,

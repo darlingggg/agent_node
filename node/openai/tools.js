@@ -1,4 +1,5 @@
 import { getProjectTempFiles, getFileContent, writeFileContent, deleteFileContent, downloadFile,upsertFileByPatch, assertDeletableToolPath } from "../file/index.js";
+import { markProjectFileActivity } from '../utils/activity.js';
 
 export const tools = [
   {
@@ -169,6 +170,7 @@ export async function getFileContentTool({path,dirPath}) {
 export async function writeFileContentTool({dirPath,path,content}) {
   try {
     const res = await writeFileContent(path,content,dirPath);
+    await markProjectFileActivity(dirPath);
     return returnJson(res, true, `写入文件内容成功: ${path}`)
   } catch (error) {
     return returnJson(null, false, `写入文件内容失败: ${error.message}`)
@@ -179,6 +181,7 @@ export async function deleteFileTool({dirPath,path}) {
   try {
     assertDeletableToolPath(path, dirPath);
     const res = await deleteFileContent(path, dirPath);
+    await markProjectFileActivity(dirPath);
     return returnJson(res, true, `删除文件成功: ${path}`)
   } catch (error) {
     return returnJson(null, false, `删除文件失败: ${error.message}`)
@@ -192,6 +195,7 @@ export async function deleteFileTool({dirPath,path}) {
 export async function downloadFileTool({dirPath, url, path}) {
   try {
     const res = await downloadFile(url, path, dirPath);
+    await markProjectFileActivity(dirPath);
     return returnJson(res, true, `下载文件成功: ${res.relativePath}`)
   } catch (error) {
     return returnJson(null, false, `下载文件失败: ${error.message}`)
@@ -201,6 +205,7 @@ export async function downloadFileTool({dirPath, url, path}) {
 export async function upsertFileTool({dirPath, patch}) {
   try {
     const res = await upsertFileByPatch(patch, dirPath);
+    await markProjectFileActivity(dirPath);
     return returnJson(res, true, `增量更新文件内容成功: ${patch}`)
   } catch (error) {
     return returnJson(null, false, `增量更新文件内容失败: ${error.message}`)

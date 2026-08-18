@@ -38,7 +38,7 @@ export const createProject = async (user, body) => {
 /** 获取项目列表 */
 export const getProjectList = async (user) => {
   const [result] = await connection.query(
-    'SELECT * FROM projects WHERE account = ?',
+    'SELECT * FROM projects WHERE account = ? AND deleted_at IS NULL',
     [user.account]
   );
   return result;
@@ -47,7 +47,7 @@ export const getProjectList = async (user) => {
 /** 获取项目详情 */
 export const getProjectInfo = async (id, user) => {
   const [rows] = await connection.query(
-    'SELECT * FROM projects WHERE id = ? AND account = ?',
+    'SELECT * FROM projects WHERE id = ? AND account = ? AND deleted_at IS NULL',
     [id, user.account]
   );
   if (rows.length === 0) throw new Error('项目不存在');
@@ -57,14 +57,16 @@ export const getProjectInfo = async (id, user) => {
 /** 删除项目 */
 export const deleteProject = async (id, user) => {
   const [rows] = await connection.query(
-    'SELECT * FROM projects WHERE id = ? AND account = ?',
+    'SELECT * FROM projects WHERE id = ? AND account = ? AND deleted_at IS NULL',
     [id, user.account]
   );
   if (rows.length === 0) throw new Error('项目不存在');
   const dirPath = rows[0].dir_path;
   await markProjectSessionsDeleted(id, user.account);
   const [result] = await connection.query(
-    'DELETE FROM projects WHERE id = ? AND account = ?',
+    `UPDATE projects
+     SET deleted_at = CURRENT_TIMESTAMP, update_time = CURRENT_TIMESTAMP
+     WHERE id = ? AND account = ? AND deleted_at IS NULL`,
     [id, user.account]
   );
   await deleteDir(dirPath);
@@ -77,7 +79,7 @@ export const deleteProject = async (id, user) => {
 /** 修改项目配置 */
 export const updateProject = async (body,user) => {
   const [rows] = await connection.query(
-    'SELECT * FROM projects WHERE id = ? AND account = ?',
+    'SELECT * FROM projects WHERE id = ? AND account = ? AND deleted_at IS NULL',
     [body.id, user.account]
   );
   if (rows.length === 0) throw new Error('项目不存在');
@@ -87,11 +89,15 @@ export const updateProject = async (body,user) => {
   let result = null
   if(!body.tempVersion)
   [result] = await connection.query(
-    'UPDATE projects SET title = ?, `desc` = ? WHERE id = ? AND account = ?',
+    `UPDATE projects
+     SET title = ?, \`desc\` = ?, update_time = CURRENT_TIMESTAMP
+     WHERE id = ? AND account = ? AND deleted_at IS NULL`,
     [body.title, body.desc ?? "", body.id, user.account]
   );
   else [result] = await connection.query(
-    'UPDATE projects SET title = ?, `desc` = ?, temp_version = ? WHERE id = ? AND account = ?',
+    `UPDATE projects
+     SET title = ?, \`desc\` = ?, temp_version = ?, update_time = CURRENT_TIMESTAMP
+     WHERE id = ? AND account = ? AND deleted_at IS NULL`,
     [body.title, body.desc ?? "", body.tempVersion, body.id, user.account]
   );
 
@@ -104,7 +110,9 @@ export const updateProject = async (body,user) => {
 /** 构建项目 */
 export const buildProject = async (projectId,link,visionId,deploymentId) => {
   const [result] = await connection.query(
-    'UPDATE projects SET link = ?, current_vision = ?, cloudflare_id = ? WHERE id = ?',
+    `UPDATE projects
+     SET link = ?, current_vision = ?, cloudflare_id = ?, update_time = CURRENT_TIMESTAMP
+     WHERE id = ? AND deleted_at IS NULL`,
     [link, visionId, deploymentId, projectId]
   );
   if (result.affectedRows !== 1) {
@@ -194,7 +202,7 @@ export const getLatestTemplateVersion = async (type) => {
 /** 获取当前项目的模板版本 */
 export const getCurrentProjectTemplateVersion = async (projectId) => {
   const [rows] = await connection.query(
-    'SELECT temp_version FROM projects WHERE id = ?',
+    'SELECT temp_version FROM projects WHERE id = ? AND deleted_at IS NULL',
     [projectId]
   );
   return {version:rows[0].temp_version};
@@ -202,7 +210,10 @@ export const getCurrentProjectTemplateVersion = async (projectId) => {
 
 /** 更新项目模板版本（从项目表读取 type 定位模板目录） */
 export const updateProjectTemplateVersion = async (projectId,upToVersion,user) => {
-  const [result] = await connection.query('select dir_path, type from projects where id = ?',[projectId]);
+  const [result] = await connection.query(
+    'SELECT dir_path, type FROM projects WHERE id = ? AND deleted_at IS NULL',
+    [projectId]
+  );
   if(!result[0]) throw new Error('项目不存在');
   const dirPath = result[0].dir_path;
   const type = result[0].type;
@@ -238,7 +249,9 @@ export const updateProjectTemplateVersion = async (projectId,upToVersion,user) =
 
   }
   const [result2] = await connection.query(
-    'UPDATE projects SET temp_version = ? WHERE id = ?',
+    `UPDATE projects
+     SET temp_version = ?, update_time = CURRENT_TIMESTAMP
+     WHERE id = ? AND deleted_at IS NULL`,
     [upToVersion, projectId]
   );
   if (result2.affectedRows !== 1) throw new Error('更新项目模板版本失败');

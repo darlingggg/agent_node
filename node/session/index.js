@@ -1,4 +1,5 @@
 import connection from '../../Mysql/index.js';
+import { getBeijingDateKey } from '../utils/beijingTime.js';
 
 /** 软删除标题后缀：_delete_ + 当前时间戳后10位 */
 const DELETE_TITLE_SUFFIX = () => `_delete_${String(Date.now()).slice(-10)}`;
@@ -77,7 +78,7 @@ export const getConversationStats = async ({ conversationId, projectId, title },
  * @returns {Promise<{settled: boolean, conversation: object|null}>} 是否首次结算及结算后的会话汇总
  * @throws {Error} 会话/项目不存在或事务更新失败
  */
-export const settleConversationUsage = async ({ conversationId, projectId, assistantSessionId, usage }) => {
+export const settleConversationUsage = async ({ conversationId, projectId, assistantSessionId, usage, status = 'completed' }) => {
   const db = await connection.getConnection();
   try {
     await db.beginTransaction();
@@ -95,6 +96,8 @@ export const settleConversationUsage = async ({ conversationId, projectId, assis
     const promptTokens = Math.max(Number(usage?.promptTokens) || 0, 0);
     const completionTokens = Math.max(Number(usage?.completionTokens) || 0, 0);
     const totalTokens = promptTokens + completionTokens;
+    const modelCalls = Math.max(Number(usage?.modelCalls) || 0, 0);
+    const failedCalls = status === 'completed' ? 0 : 1;
     const contextTokens = Math.max(Number(usage?.currentContextTokens) || 0, 0);
     const contextLimit = Math.max(Number(usage?.contextLimit) || 0, 0);
     const [conversationUpdate] = await db.query(
@@ -124,6 +127,31 @@ export const settleConversationUsage = async ({ conversationId, projectId, assis
       [promptTokens, completionTokens, totalTokens, projectId]
     );
     if (projectUpdate.affectedRows !== 1) throw new Error('项目 token 结算失败：项目不存在');
+    const [[owner]] = await db.query(
+      `SELECT u.id AS user_id
+       FROM projects p
+       JOIN users u ON u.account = p.account
+       WHERE p.id = ?
+       LIMIT 1`,
+      [projectId]
+    );
+    if (!owner) throw new Error('AI 用量结算失败：项目用户不存在');
+    await db.query(
+      `INSERT INTO ai_usage_daily
+       (metric_date, user_id, project_id, prompt_tokens, completion_tokens,
+        total_tokens, model_calls, failed_calls)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE
+         prompt_tokens = prompt_tokens + VALUES(prompt_tokens),
+         completion_tokens = completion_tokens + VALUES(completion_tokens),
+         total_tokens = total_tokens + VALUES(total_tokens),
+         model_calls = model_calls + VALUES(model_calls),
+         failed_calls = failed_calls + VALUES(failed_calls)`,
+      [
+        getBeijingDateKey(), owner.user_id, projectId, promptTokens,
+        completionTokens, totalTokens, modelCalls, failedCalls,
+      ]
+    );
     await db.commit();
     const [rows] = await connection.query('select * from conversations where id = ? limit 1', [conversationId]);
     return { settled: true, conversation: rows[0] || null };

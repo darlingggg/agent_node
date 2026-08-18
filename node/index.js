@@ -3,6 +3,7 @@ import cors from 'cors';
 import resCC from './middleware/resCC.js';
 import frontRouter from './routes/front.js';
 import adminRouter from './routes/admin.js';
+import { startStorageMetricsScheduler } from './cos/storageMetrics.js';
 
 const PORT = process.env.PORT || 3000;
 const app = express();
@@ -31,4 +32,5 @@ app.use('/admin', adminRouter);
 
 app.listen(PORT, () => {
   console.log(`Express 服务已启动: http://localhost:${PORT}`);
+  startStorageMetricsScheduler();
 });
