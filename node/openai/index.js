@@ -6,7 +6,7 @@ import { encodingForModel } from 'js-tiktoken'
 import { baseURL, key } from '../../key.js'
 import { tools, functionMap } from './tools.js'
 import connection from '../../Mysql/index.js';
-import { describeImage } from './image.js'
+import { describeImage } from './image-desc.js'
 
 const client = new OpenAI({
     apiKey: key,
