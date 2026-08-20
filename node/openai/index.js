@@ -432,7 +432,7 @@ ${instruction}`;
  * @param {number|string|null} assistantSessionId 本轮 assistant 消息对应的 sessions.id
  * @returns {Promise<void>} 所有工具递归和最终回复完成后返回
  */
-async function runChat(userMessage, onEvent, context, projectDirPath, imageUrls, prompt, tracker, signal, appendUserMessage, userSessionId=null, assistantSessionId=null) {
+async function runChat(userMessage, onEvent, context, projectDirPath, imageUrls, prompt, tracker, signal, appendUserMessage, userSessionId=null, assistantSessionId=null, toolContext={}) {
   throwIfAborted(signal)
   let ImageResponse = ""
 
@@ -520,12 +520,20 @@ async function runChat(userMessage, onEvent, context, projectDirPath, imageUrls,
       const boundArgs = bindProjectDirPath(name, args, projectDirPath)
       onEvent({ event: 'tool_start', data: `正在执行工具: ${name} $$ 参数: ${JSON.stringify(boundArgs)}` })
       throwIfAborted(signal)
-      const result = await functionMap[name](boundArgs)
+      const handler = functionMap[name]
+      if (!handler) throw new Error('未注册的工具: ' + name)
+      const result = await handler(boundArgs, {
+        ...toolContext,
+        assistantSessionId,
+        toolCallId: id,
+        onEvent,
+        signal,
+      })
       throwIfAborted(signal)
       context.push({ role: "tool", content: result, tool_call_id: id })
       onEvent({ event: 'tool_end', data: `工具执行完毕: ${name} $$ 结果: ${result}` })
     }
-    await runChat("", onEvent, context, projectDirPath, [], prompt, tracker, signal, false, null, assistantSessionId)
+    await runChat("", onEvent, context, projectDirPath, [], prompt, tracker, signal, false, null, assistantSessionId, toolContext)
   } else if (assistantText) {
     context.push({ role: "assistant", content: assistantText, _sessionId: assistantSessionId })
   }
@@ -580,7 +588,8 @@ export async function chat(userMessage="", onEvent=(msg)=>{process.stdout.write(
       options.signal,
       true,
       options.userSessionId,
-      options.assistantSessionId
+      options.assistantSessionId,
+      options.toolContext || {}
     )
     pruneCompletedToolContext(context, options.assistantSessionId, tracker.assistantText)
     tracker.currentContextTokens = countContextTokens(context)

@@ -270,3 +270,47 @@ CREATE TABLE storage_daily_metrics (
   orphan_bytes BIGINT NOT NULL DEFAULT 0 COMMENT '未匹配用户的文件字节数',
   synced_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '同步完成时间'
 ) COMMENT 'COS每日存储快照';
+
+-- AI 生图任务表（执行一次） ================================================
+CREATE TABLE IF NOT EXISTS ai_generated_images (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  account VARCHAR(64) NOT NULL COMMENT '任务所属用户账号',
+  project_id BIGINT UNSIGNED NULL COMMENT '关联项目，可为空',
+  conversation_id BIGINT UNSIGNED NULL COMMENT '关联会话，可为空',
+  model VARCHAR(100) NOT NULL COMMENT '生成模型',
+  external_task_id VARCHAR(191) NULL COMMENT '图片服务商异步任务 ID',
+  prompt TEXT NOT NULL,
+  negative_prompt TEXT NULL,
+  reference_images JSON NULL COMMENT '图生图参考图片 URL 数组',
+  image_size VARCHAR(32) NOT NULL DEFAULT 'auto',
+  status VARCHAR(20) NOT NULL DEFAULT 'queued'
+    COMMENT 'queued/submitted/generating/storing/succeeded/failed',
+  temporary_url TEXT NULL COMMENT '服务商临时图片地址，仅用于尽快展示',
+  object_key VARCHAR(512) NULL COMMENT 'COS 永久对象键，不保存临时签名 URL',
+  content_type VARCHAR(64) NULL,
+  original_size BIGINT UNSIGNED NULL COMMENT '格式转换前字节数',
+  stored_size BIGINT UNSIGNED NULL COMMENT 'WebP 入库字节数',
+  width INT UNSIGNED NULL,
+  height INT UNSIGNED NULL,
+  error_message TEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  completed_at TIMESTAMP NULL DEFAULT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_ai_generated_images_external_task (external_task_id),
+  KEY idx_ai_generated_images_account_created (account, created_at),
+  KEY idx_ai_generated_images_conversation (account, conversation_id, created_at),
+  KEY idx_ai_generated_images_project (account, project_id, created_at),
+  KEY idx_ai_generated_images_status (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- 已创建过旧版本表时执行一次，使 account 可与现有 users 表直接关联 ========
+ALTER TABLE ai_generated_images
+  CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+
+-- 主 AI 生图任务关联：执行一次（新建和已有环境都在上方 CREATE 后执行） ========
+ALTER TABLE ai_generated_images
+  ADD COLUMN assistant_session_id BIGINT UNSIGNED NULL COMMENT '关联主AI回复的sessions.id，可为空' AFTER conversation_id,
+  ADD COLUMN tool_call_id VARCHAR(191) NULL COMMENT '关联主AI工具调用ID，可为空' AFTER assistant_session_id,
+  ADD INDEX idx_ai_generated_images_assistant_session (account, assistant_session_id, created_at),
+  ADD INDEX idx_ai_generated_images_tool_call (tool_call_id);

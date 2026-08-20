@@ -79,11 +79,15 @@ export async function getUploadedAssets({ page, pageSize, marker = '', userId })
     const user = storageKey ? usersByStorageKey.get(storageKey) : null;
     const isDirectory = key.endsWith('/');
     const extension = path.posix.extname(key).toLowerCase();
+    const relativePath = storageKey ? key.slice(`uploads/${storageKey}/`.length) : key;
 
     return {
       key,
       fileName: isDirectory ? '' : path.posix.basename(key),
-      relativePath: storageKey ? key.slice(`uploads/${storageKey}/`.length) : key,
+      relativePath,
+      source: relativePath === 'ai_generated' || relativePath.startsWith('ai_generated/')
+        ? 'ai_generated'
+        : 'user_upload',
       extension,
       size: Number(item.Size) || 0,
       etag: String(item.ETag || '').replace(/^"|"$/g, ''),

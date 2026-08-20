@@ -1,5 +1,6 @@
 import { getProjectTempFiles, getFileContent, writeFileContent, deleteFileContent, downloadFile,upsertFileByPatch, assertDeletableToolPath } from "../file/index.js";
 import { markProjectFileActivity } from '../utils/activity.js';
+import { createImageGenerationTask, waitForStoredImageGenerationTask } from '../imageGeneration/index.js';
 
 export const tools = [
   {
@@ -132,6 +133,37 @@ export const tools = [
       }
     }
   },
+  {
+    "type": "function",
+    "function": {
+      "name": "generate_image",
+      "description": "根据用户要求生成一张图片。工具会等待图片保存到 COS 后才返回，结果不包含服务商临时地址。只有用户明确提出生成、绘制或创建图片时才调用。",
+      "parameters": {
+        "type": "object",
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "description": "正向提示词，描述主体、场景、构图、光线和风格"
+          },
+          "negativePrompt": {
+            "type": "string",
+            "description": "可选，描述不希望画面中出现的元素、瑕疵或风格"
+          },
+          "imageUrls": {
+            "type": "array",
+            "maxItems": 3,
+            "items": { "type": "string" },
+            "description": "可选，图生图使用的 1-3 张公网图片地址"
+          },
+          "size": {
+            "type": "string",
+            "description": "输出尺寸，默认 auto；也可使用宽*高格式，宽高均为 512-2048，例如 1024*1024"
+          }
+        },
+        "required": ["prompt"]
+      }
+    }
+  },
 ]
 
 export const functionMap = {
@@ -141,6 +173,7 @@ export const functionMap = {
   "delete_file": deleteFileTool,
   "download_file": downloadFileTool,
   "upsert_file": upsertFileTool,
+  "generate_image": generateImageTool,
 }
 
 const returnJson = (data,isSuccess=false,message="") => JSON.stringify({
@@ -209,5 +242,55 @@ export async function upsertFileTool({dirPath, patch}) {
     return returnJson(res, true, `增量更新文件内容成功: ${patch}`)
   } catch (error) {
     return returnJson(null, false, `增量更新文件内容失败: ${error.message}`)
+  }
+}
+
+/** 主 AI 生图工具：临时地址仅供后端转存，COS 成功后才返回工具结果。 */
+export async function generateImageTool(args, runtime = {}) {
+  try {
+    const {
+      account,
+      storageKey,
+      projectId,
+      conversationId,
+      assistantSessionId,
+      toolCallId,
+      onEvent,
+    } = runtime;
+    if (!account || !storageKey || !projectId || !conversationId || !assistantSessionId || !toolCallId) {
+      throw new Error('生图工具缺少可信会话上下文');
+    }
+
+    const task = await createImageGenerationTask({
+      account,
+      storageKey,
+      projectId,
+      conversationId,
+      assistantSessionId,
+      toolCallId,
+      prompt: args.prompt,
+      negativePrompt: args.negativePrompt || '',
+      imageUrls: args.imageUrls || [],
+      size: args.size || 'auto',
+    });
+    onEvent?.({ event: 'image_task', data: task });
+
+    const stored = await waitForStoredImageGenerationTask({
+      taskId: task.taskId,
+      account,
+      storageKey,
+    });
+    onEvent?.({ event: 'image_task', data: stored });
+    return returnJson({
+      taskId: stored.taskId,
+      status: stored.status,
+      url: stored.url,
+      width: stored.width,
+      height: stored.height,
+      contentType: stored.contentType,
+      storedSize: stored.storedSize,
+    }, true, '图片已生成并保存到 COS');
+  } catch (error) {
+    return returnJson(null, false, '图片生成失败: ' + error.message);
   }
 }

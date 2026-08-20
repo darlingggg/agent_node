@@ -23,7 +23,13 @@ const SALT_ROUNDS = 10;
 /** 昵称默认值，未传时使用账号 */
 const DEFAULT_NICKNAME = (account) => account;
 
-const USER_ACCOUNT_TABLES = ['projects', 'sessions', 'log', 'snapshots'];
+const USER_ACCOUNT_TABLES = [
+  'projects',
+  'sessions',
+  'log',
+  'snapshots',
+  'ai_generated_images',
+];
 
 function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object, key);

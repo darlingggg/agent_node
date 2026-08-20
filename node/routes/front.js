@@ -20,6 +20,12 @@ import { addSnapshot, getSnapshotList,deleteSnapshot,changeSnapshot,getCurrentVi
 import { buildCommand,deleteOnlineVersion } from '../exec/index.js';
 import { getCredential } from '../cos/index.js';
 import { markProjectFileActivity, markUserActive } from '../utils/activity.js';
+import {
+  createImageGenerationTask,
+  getPublicImageGenerationTask,
+  listImageGenerationTasks,
+  subscribeImageGenerationTask,
+} from '../imageGeneration/index.js';
 import { QQ_REDIRECT_URI } from '../../key.js';
 
 /** 前台接口路由；挂载在根路径以保持现有接口地址不变。 */
@@ -820,6 +826,12 @@ app.post('/chat/stream', authJWT, async (req, res) => {
         signal,
         userSessionId: userSession.id,
         assistantSessionId: assistantSession.sessionId,
+        toolContext: {
+          account: req.user.account,
+          storageKey: req.user.storage_key,
+          projectId: Number(projectId),
+          conversationId: conversation.id,
+        },
       }),
       onSettled: async (usage, status) => {
         const result = await settleConversationUsage({
@@ -883,6 +895,7 @@ app.post('/chat/messages/:messageId/cancel', authJWT, async (req, res) => {
   }
 });
 
+/** AI 会话重连接 */
 app.get('/chat/messages/:messageId/stream', authJWT, async (req, res) => {
   const { messageId } = req.params
   const { offset = 0 } = req.query
@@ -904,6 +917,89 @@ app.get('/chat/messages/:messageId/stream', authJWT, async (req, res) => {
   } catch (err) {
     if (!res.writableEnded) {
       res.write(`data: ${JSON.stringify({ event: 'error', data: err.message })}\n\n`)
+      res.end()
+    }
+  }
+})
+
+/** AI 生图 */
+app.post('/agent/image-gen', authJWT, async (req, res) => {
+  if (!req.body.prompt) return res.cc(1, 'prompt 不能为空')
+  try {
+    const result = await createImageGenerationTask({
+      account: req.user.account,
+      storageKey: req.user.storage_key,
+      prompt: req.body.prompt,
+      imageUrls: req.body.imageUrls ?? [],
+      negativePrompt: req.body.negativePrompt ?? '',
+      size: req.body.size ?? 'auto',
+      projectId: req.body.projectId ?? null,
+      conversationId: req.body.conversationId ?? null,
+    })
+    await markUserActive(req.user.id)
+    res.status(202)
+    res.cc(0, '图片生成任务已创建', result)
+  } catch (err) {
+    res.cc(1, err.message)
+  }
+})
+
+/** 查找当前账号最近的生图任务，刷新后可按会话找回任务 ID。 */
+app.get('/agent/image-gen/tasks', authJWT, async (req, res) => {
+  try {
+    const result = await listImageGenerationTasks({
+      account: req.user.account,
+      projectId: req.query.projectId,
+      conversationId: req.query.conversationId,
+      assistantSessionId: req.query.assistantSessionId,
+      page: req.query.page,
+      pageSize: req.query.pageSize,
+    })
+    res.cc(0, '获取成功', result)
+  } catch (err) {
+    res.cc(1, err.message)
+  }
+})
+
+/** 查询单个生图任务，可作为不使用 SSE 时的轮询接口。 */
+app.get('/agent/image-gen/tasks/:taskId', authJWT, async (req, res) => {
+  if (!/^\d+$/.test(req.params.taskId)) return res.cc(1, 'taskId 格式不正确')
+  try {
+    const result = await getPublicImageGenerationTask(
+      req.params.taskId,
+      req.user.account,
+    )
+    if (!result) return res.cc(1, '图片生成任务不存在')
+    res.cc(0, '获取成功', result)
+  } catch (err) {
+    res.cc(1, err.message)
+  }
+})
+
+/** AI 生图 SSE 重连接口。 */
+app.get('/agent/image-gen/tasks/:taskId/stream', authJWT, async (req, res) => {
+  if (!/^\d+$/.test(req.params.taskId)) return res.cc(1, 'taskId 格式不正确')
+
+  res.setHeader('Content-Type', 'text/event-stream; charset=utf-8')
+  res.setHeader('Cache-Control', 'no-cache')
+  res.setHeader('Connection', 'keep-alive')
+  res.setHeader('X-Accel-Buffering', 'no')
+  res.flushHeaders?.()
+  res.write('retry: 3000\n\n')
+
+  try {
+    await subscribeImageGenerationTask({
+      taskId: req.params.taskId,
+      account: req.user.account,
+      storageKey: req.user.storage_key,
+      res,
+    })
+  } catch (err) {
+    if (!res.writableEnded) {
+      res.write(`data: ${JSON.stringify({
+        event: 'error',
+        data: { taskId: Number(req.params.taskId), message: err.message },
+      })}\n\n`)
       res.end()
     }
   }

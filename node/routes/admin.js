@@ -5,6 +5,7 @@ import projectsRouter from './admin/projects.js';
 import usersRouter from './admin/users.js';
 import assetsRouter from './admin/assets.js';
 import dashboardRouter from './admin/dashboard.js';
+import imageGenerationsRouter from './admin/imageGenerations.js';
 
 /**
  * 后台接口路由。
@@ -18,5 +19,6 @@ router.use('/projects', projectsRouter);
 router.use('/users', usersRouter);
 router.use('/assets', assetsRouter);
 router.use('/dashboard', dashboardRouter);
+router.use('/image-generations', imageGenerationsRouter);
 
 export default router;
