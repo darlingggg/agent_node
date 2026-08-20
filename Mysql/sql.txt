@@ -302,11 +302,11 @@ CREATE TABLE IF NOT EXISTS ai_generated_images (
   KEY idx_ai_generated_images_conversation (account, conversation_id, created_at),
   KEY idx_ai_generated_images_project (account, project_id, created_at),
   KEY idx_ai_generated_images_status (status, updated_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 已创建过旧版本表时执行一次，使 account 可与现有 users 表直接关联 ========
 ALTER TABLE ai_generated_images
-  CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;
+  CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
 -- 主 AI 生图任务关联：执行一次（新建和已有环境都在上方 CREATE 后执行） ========
 ALTER TABLE ai_generated_images
