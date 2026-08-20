@@ -81,7 +81,7 @@ export async function getAdminImageGenerations({ pageSize, offset, ...filters })
   const { where, params } = buildFilters(filters);
   const summarySql = "SELECT COUNT(*) AS total, SUM(a.status = 'succeeded') AS succeeded, SUM(a.status = 'failed') AS failed, SUM(a.status IN ('queued', 'submitted', 'generating', 'storing')) AS processing, COALESCE(SUM(a.stored_size), 0) AS stored_bytes FROM ai_generated_images a " + where;
   const [[summaryRow]] = await connection.query(summarySql, params);
-  const listSql = 'SELECT a.*, u.id AS user_id, u.nickname AS user_nickname, p.title AS project_title FROM ai_generated_images a LEFT JOIN users u ON u.account = a.account COLLATE utf8mb4_0900_ai_ci LEFT JOIN projects p ON p.id = a.project_id ' + where + ' ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?';
+  const listSql = 'SELECT a.*, u.id AS user_id, u.nickname AS user_nickname, p.title AS project_title FROM ai_generated_images a LEFT JOIN users u ON u.account = a.account COLLATE utf8mb4_unicode_ci LEFT JOIN projects p ON p.id = a.project_id ' + where + ' ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?';
   const [rows] = await connection.query(listSql, [...params, pageSize, offset]);
 
   return {
@@ -101,7 +101,7 @@ export async function getAdminImageGenerations({ pageSize, offset, ...filters })
 export async function getAdminImageGeneration(rawTaskId) {
   const taskId = parsePositiveInteger(rawTaskId, 'taskId');
   const [rows] = await connection.query(
-    'SELECT a.*, u.id AS user_id, u.nickname AS user_nickname, p.title AS project_title, c.title AS conversation_title FROM ai_generated_images a LEFT JOIN users u ON u.account = a.account COLLATE utf8mb4_0900_ai_ci LEFT JOIN projects p ON p.id = a.project_id LEFT JOIN conversations c ON c.id = a.conversation_id WHERE a.id = ? LIMIT 1',
+    'SELECT a.*, u.id AS user_id, u.nickname AS user_nickname, p.title AS project_title, c.title AS conversation_title FROM ai_generated_images a LEFT JOIN users u ON u.account = a.account COLLATE utf8mb4_unicode_ci LEFT JOIN projects p ON p.id = a.project_id LEFT JOIN conversations c ON c.id = a.conversation_id WHERE a.id = ? LIMIT 1',
     [taskId],
   );
   if (!rows.length) throw new Error('生图任务不存在');
