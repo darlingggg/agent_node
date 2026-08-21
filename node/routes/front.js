@@ -12,6 +12,7 @@ import { createProject, getProjectList, deleteProject,updateProject,getProjectIn
   getLatestTemplateVersion,getCurrentProjectTemplateVersion,updateProjectTemplateVersion,getAllTemplateVersionFiles } from '../project/index.js';
 import { createSession, createUserChatSession, createStreamingAssistantSession, getSessionList,
   updateSession,deleteSession,getSessionDetail,getOrCreateConversation,getConversationStats,
+  getConversationList,getConversationMessages,updateConversation,deleteConversation,
   settleConversationUsage } from '../session/index.js';
 import { addLog, getLogList } from '../log/index.js';
 import { keepContext,message } from '../openai/index.js';
@@ -20,6 +21,7 @@ import { addSnapshot, getSnapshotList,deleteSnapshot,changeSnapshot,getCurrentVi
 import { buildCommand,deleteOnlineVersion } from '../exec/index.js';
 import { getCredential } from '../cos/index.js';
 import { markProjectFileActivity, markUserActive } from '../utils/activity.js';
+import { ContextCache } from '../utils/contextCache.js';
 import {
   createImageGenerationTask,
   getPublicImageGenerationTask,
@@ -32,7 +34,13 @@ import { QQ_REDIRECT_URI } from '../../key.js';
 const app = express.Router();
 
 // 创建上下文map
-const contextMap = new Map();
+const contextMap = new ContextCache({
+  ttlMs: 3 * 60 * 60 * 1000,
+  maxEntries: 100,
+  maxTotalBytes: 64 * 1024 * 1024,
+  maxEntryBytes: 16 * 1024 * 1024,
+  cleanupIntervalMs: 10 * 60 * 1000,
+});
 
 const wechatAuthSessions = new OAuthSessionStore('wechat');
 const qqAuthSessions = new OAuthSessionStore('qq');
@@ -677,6 +685,60 @@ app.get('/session/list',authJWT, async (req, res) => {
   }
 });
 
+/** 获取当前项目的会话摘要列表，不返回全部消息正文。 */
+app.get('/conversation/list', authJWT, async (req, res) => {
+  const { projectId, keyword, page, pageSize } = req.query;
+  if (!projectId) return res.cc(1, '项目id不能为空');
+  try {
+    const result = await getConversationList({ projectId, keyword, page, pageSize }, req.user);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 按稳定 conversationId 获取当前会话消息，支持向前游标分页。 */
+app.get('/conversation/:conversationId/messages', authJWT, async (req, res) => {
+  if (!/^\d+$/.test(req.params.conversationId)) return res.cc(1, 'conversationId格式不正确');
+  try {
+    const result = await getConversationMessages({
+      conversationId: req.params.conversationId,
+      beforeId: req.query.beforeId,
+      limit: req.query.limit,
+    }, req.user);
+    res.cc(0, '获取成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 按稳定 conversationId 修改会话标题。 */
+app.patch('/conversation/:conversationId', authJWT, async (req, res) => {
+  if (!/^\d+$/.test(req.params.conversationId)) return res.cc(1, 'conversationId格式不正确');
+  if (!req.body.title?.trim()) return res.cc(1, '新标题不能为空');
+  try {
+    const result = await updateConversation({
+      conversationId: req.params.conversationId,
+      title: req.body.title,
+    }, req.user);
+    res.cc(0, '修改成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
+/** 按稳定 conversationId 软删除会话。 */
+app.delete('/conversation/:conversationId', authJWT, async (req, res) => {
+  if (!/^\d+$/.test(req.params.conversationId)) return res.cc(1, 'conversationId格式不正确');
+  try {
+    const result = await deleteConversation(req.params.conversationId, req.user);
+    contextMap.delete(String(req.params.conversationId));
+    res.cc(0, '删除成功', result);
+  } catch (err) {
+    res.cc(1, err.message);
+  }
+});
+
 /** 修改会话标题 */
 app.patch('/session/update',authJWT, async (req, res) => {
   const { title,oldTitle,projectId } = req.body;
@@ -747,7 +809,7 @@ app.get('/project/usage', authJWT, async (req, res) => {
 
 /** 与AI对话（SSE 流式） */
 app.post('/chat/stream', authJWT, async (req, res) => {
-  const { prompt, projectId, title, imageUrls = [] } = req.body
+  const { prompt, projectId, conversationId, title, imageUrls = [] } = req.body
   if (!prompt) return res.cc(1, '发送消息不能为空')
   if (!projectId) return res.cc(1, '操作项目不能为空')
 
@@ -757,14 +819,16 @@ app.post('/chat/stream', authJWT, async (req, res) => {
   try {
     const projectInfo = await getProjectInfo(projectId, req.user)
     await markUserActive(req.user.id)
-    const conversation = await getOrCreateConversation({ projectId, title: sessionTitle }, req.user)
+    const conversation = await getOrCreateConversation({ projectId, title: sessionTitle, conversationId }, req.user)
+    const resolvedSessionTitle = conversation.title
     const contextKey = String(conversation.id)
     // 获取上下文历史记录
-    if (sessionTitle && !contextMap.has(contextKey)) {
+    const cachedHistory = resolvedSessionTitle ? contextMap.get(contextKey) : undefined
+    if (resolvedSessionTitle && cachedHistory === undefined) {
       const { result } = await keepContext(
         req.user.account,
         projectId,
-        sessionTitle,
+        resolvedSessionTitle,
         conversation.id,
         conversation.summarized_until_session_id
       )
@@ -783,21 +847,21 @@ app.post('/chat/stream', authJWT, async (req, res) => {
       }
       context = context.concat(history)
       contextMap.set(contextKey, history)
-    } else if (sessionTitle && contextMap.has(contextKey)) {
-      context = context.concat(contextMap.get(contextKey))
+    } else if (resolvedSessionTitle) {
+      context = context.concat(cachedHistory)
     }
 
     const dirPath = projectInfo.dir_path
     const projectTitle = projectInfo.title ?? ""
     const desc = projectInfo.desc ?? ""
     const userSession = await createUserChatSession({
-      title: sessionTitle,
+      title: resolvedSessionTitle,
       projectId,
       content: prompt,
       conversationId: conversation.id,
     }, req.user)
     const assistantSession = await createStreamingAssistantSession({
-      title: sessionTitle,
+      title: resolvedSessionTitle,
       projectId,
       conversationId: conversation.id,
     }, req.user)
@@ -829,8 +893,7 @@ app.post('/chat/stream', authJWT, async (req, res) => {
         toolContext: {
           account: req.user.account,
           storageKey: req.user.storage_key,
-          projectId: Number(projectId),
-          conversationId: conversation.id,
+          projectId: Number(projectId),          conversationId: conversation.id,
         },
       }),
       onSettled: async (usage, status) => {
@@ -863,7 +926,7 @@ app.post('/chat/stream', authJWT, async (req, res) => {
         }
       },
       onComplete: async (_content, _usage, { settlementFailed } = {}) => {
-        if (!sessionTitle) return
+        if (!resolvedSessionTitle) return
         if (settlementFailed) contextMap.delete(contextKey)
         else contextMap.set(contextKey, context.slice(1))
       },

@@ -162,6 +162,10 @@ ALTER TABLE sessions
 
 CREATE INDEX idx_sessions_conversation ON sessions (conversation_id, id);
 
+-- 会话摘要按项目、状态和最近更新时间分页查询。
+CREATE INDEX idx_conversations_project_status_updated
+  ON conversations (account, project_id, status, updated_at, id);
+
 ALTER TABLE projects
   ADD COLUMN ai_prompt_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '项目累计AI输入token',
   ADD COLUMN ai_completion_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '项目累计AI输出token',

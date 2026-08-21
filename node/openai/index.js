@@ -628,16 +628,14 @@ export async function keepContext(account,projectId,title,conversationId=null,su
     ? [account, projectId, conversationId, Number(summarizedUntilSessionId) || 0]
     : [account, projectId, title]
   const sql = conversationId
-    ? 'select * from sessions where account = ? and project_id = ? and conversation_id = ? and id > ? order by id asc'
-    : 'select * from sessions where account = ? and project_id = ? and title = ? order by id asc'
+    ? `select s.*, coalesce(m.content, s.content, '') as content
+         from sessions s left join messages m on m.id = s.message_id
+        where s.account = ? and s.project_id = ? and s.conversation_id = ? and s.id > ?
+        order by s.id asc`
+    : `select s.*, coalesce(m.content, s.content, '') as content
+         from sessions s left join messages m on m.id = s.message_id
+        where s.account = ? and s.project_id = ? and s.title = ?
+        order by s.id asc`
   const [res] = await connection.query(sql, params);
-  if(res.length === 0) return {result:res,length:res.length}
-  for(const item of res){
-    if(item.message_id){
-      const [res1] = await connection.query('select * from messages where id = ?', [item.message_id]);
-      if(res1.length === 0) continue;
-      item.content = res1[0].content;
-    }
-  }
   return {result:res,length:res.length}
 }
