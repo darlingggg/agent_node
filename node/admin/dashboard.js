@@ -2,6 +2,12 @@ import connection from '../../Mysql/index.js';
 import { getStorageSyncState, STORAGE_METRICS_LOCK_NAME } from '../cos/storageMetrics.js';
 import { getBeijingDateRange, listBeijingDates } from '../utils/beijingTime.js';
 
+// Convert through Unix time so TIMESTAMP grouping is independent of the MySQL session time zone.
+const BEIJING_DATE_FROM_TIMESTAMP_SQL = `DATE_FORMAT(
+  DATE_ADD('1970-01-01 00:00:00', INTERVAL UNIX_TIMESTAMP(created_at) + 28800 SECOND),
+  '%Y-%m-%d'
+)`;
+
 function toNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
@@ -27,19 +33,19 @@ export async function getDashboardOverview(days) {
   ] = await Promise.all([
     connection.query(
       `SELECT COUNT(*) AS total,
-              SUM(created_at >= ? AND created_at < ?) AS new_count,
-              SUM(last_active_at >= ? AND last_active_at < ?) AS active_count,
+              SUM(created_at >= FROM_UNIXTIME(?) AND created_at < FROM_UNIXTIME(?)) AS new_count,
+              SUM(last_active_at >= FROM_UNIXTIME(?) AND last_active_at < FROM_UNIXTIME(?)) AS active_count,
               SUM(role = 'disabled') AS disabled_count
        FROM users`,
-      [range.startUtc, range.endExclusiveUtc, range.startUtc, range.endExclusiveUtc]
+      [range.startEpochSeconds, range.endExclusiveEpochSeconds, range.startEpochSeconds, range.endExclusiveEpochSeconds]
     ),
     connection.query(
       `SELECT COUNT(*) AS total,
-              SUM(created_at >= ? AND created_at < ?) AS new_count,
+              SUM(created_at >= FROM_UNIXTIME(?) AND created_at < FROM_UNIXTIME(?)) AS new_count,
               SUM(deleted_at IS NULL) AS active_count,
               SUM(deleted_at IS NOT NULL) AS deleted_count
        FROM projects`,
-      [range.startUtc, range.endExclusiveUtc]
+      [range.startEpochSeconds, range.endExclusiveEpochSeconds]
     ),
     connection.query(
       `SELECT
@@ -73,20 +79,20 @@ export async function getDashboardOverview(days) {
        FROM user_storage_stats s`
     ),
     connection.query(
-      `SELECT DATE_FORMAT(CONVERT_TZ(created_at, '+00:00', '+08:00'), '%Y-%m-%d') AS metric_date,
+      `SELECT ${BEIJING_DATE_FROM_TIMESTAMP_SQL} AS metric_date,
               COUNT(*) AS new_users
        FROM users
-       WHERE created_at >= ? AND created_at < ?
+       WHERE created_at >= FROM_UNIXTIME(?) AND created_at < FROM_UNIXTIME(?)
        GROUP BY metric_date`,
-      [range.startUtc, range.endExclusiveUtc]
+      [range.startEpochSeconds, range.endExclusiveEpochSeconds]
     ),
     connection.query(
-      `SELECT DATE_FORMAT(CONVERT_TZ(created_at, '+00:00', '+08:00'), '%Y-%m-%d') AS metric_date,
+      `SELECT ${BEIJING_DATE_FROM_TIMESTAMP_SQL} AS metric_date,
               COUNT(*) AS new_projects
        FROM projects
-       WHERE created_at >= ? AND created_at < ?
+       WHERE created_at >= FROM_UNIXTIME(?) AND created_at < FROM_UNIXTIME(?)
        GROUP BY metric_date`,
-      [range.startUtc, range.endExclusiveUtc]
+      [range.startEpochSeconds, range.endExclusiveEpochSeconds]
     ),
     connection.query(
       `SELECT DATE_FORMAT(metric_date, '%Y-%m-%d') AS metric_date,

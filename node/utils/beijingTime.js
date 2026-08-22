@@ -22,6 +22,8 @@ export function getBeijingDateRange(days, now = new Date()) {
     endDate,
     startUtc: formatUtcSqlDate(startUtc),
     endExclusiveUtc: formatUtcSqlDate(endExclusiveUtc),
+    startEpochSeconds: Math.floor(startUtc.getTime() / 1000),
+    endExclusiveEpochSeconds: Math.floor(endExclusiveUtc.getTime() / 1000),
   };
 }
 
