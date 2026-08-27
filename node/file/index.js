@@ -3,6 +3,7 @@ import fs from 'fs/promises';
 import path from 'path';
 import readline from 'readline';
 import { parsePatch, applyPatch } from 'diff';
+import connection from '../../Mysql/index.js';
 
 /** 默认项目根目录 */
 export const PROJECT_TEMP_ROOT = 'C:\\pro_self\\projectTemp';
@@ -86,6 +87,17 @@ function resolveRootDir(dir) {
   return path.isAbsolute(cleaned)
     ? cleaned
     : path.resolve(PROJECT_TEMP_ROOT, cleaned);
+}
+
+/** 文件系统修改成功后，按项目根目录刷新项目更新时间。 */
+async function touchProjectUpdateTime(dirPath) {
+  const rootDir = resolveRootDir(dirPath);
+  await connection.query(
+    `UPDATE projects
+     SET update_time = CURRENT_TIMESTAMP
+     WHERE dir_path = ? AND deleted_at IS NULL`,
+    [rootDir]
+  );
 }
 
 /**
@@ -188,6 +200,7 @@ export async function updateProjectIndexHtml(dirPath, title, desc) {
   }
 
   await fs.writeFile(indexPath, html, 'utf-8');
+  await touchProjectUpdateTime(dirPath);
 }
 
 /**
@@ -198,6 +211,7 @@ export async function updateProjectIndexHtml(dirPath, title, desc) {
  */
 export async function copyDir(sourceDir, targetDir) {
   await fs.cp(sourceDir, targetDir, { recursive: true,filter: src => !src.includes('node_modules')});
+  await touchProjectUpdateTime(targetDir);
   return {dirPath: targetDir}
 }
 
@@ -310,6 +324,7 @@ export async function writeFileContent(filePath, content = '', dir, judgeSrc = t
   }
 
   await fs.writeFile(fullPath, content, 'utf-8');
+  await touchProjectUpdateTime(rootDir);
 
   return {
     dir: rootDir,
@@ -704,6 +719,10 @@ export async function importFilesToPublic({ dirPath, path: subPath = '/', urls =
     }
   }
 
+  if (results.some((item) => item.success)) {
+    await touchProjectUpdateTime(rootDir)
+  }
+
   return {
     dirPath: rootDir,
     saveDir: relativeDir,
@@ -775,6 +794,7 @@ export async function downloadFile(url, filePath, dir) {
   const parentDir = path.dirname(fullPath)
   await fs.mkdir(parentDir, { recursive: true })
   await fs.writeFile(fullPath, buffer)
+  await touchProjectUpdateTime(rootDir)
 
   return {
     dir: rootDir,
@@ -821,6 +841,7 @@ export async function deleteFileContent(filePath, dir) {
   }
 
   await fs.unlink(fullPath)
+  await touchProjectUpdateTime(rootDir)
 
   return {
     content: '删除成功',
@@ -912,6 +933,7 @@ export async function deletePublicAsset(filePath, dirPath) {
   }
 
   await fs.unlink(fullPath)
+  await touchProjectUpdateTime(rootDir)
 
   return {
     dirPath: rootDir,
@@ -1091,6 +1113,7 @@ export async function upsertFileByPatch(patch, dirPath) {
     } else {
       await fs.writeFile(fullPath, newText, 'utf-8');
     }
+    await touchProjectUpdateTime(rootDir);
     console.log(`${relativePath} 增量更新成功`);
     results.push({
       path: fullPath,

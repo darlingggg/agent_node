@@ -2,6 +2,7 @@ import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import connection from '../../Mysql/index.js';
 import { issueTokenPair } from './index.js';
+import { createStorageKey } from '../utils/storageKey.js';
 import { WECHAT_VERIFY_TOKEN, WECHAT_APP_ID, WECHAT_APP_SECRET, WECHAT_OAUTH_SCOPE } from '../../key.js';
 
 export function verifyWechatServerSignature({ signature, timestamp, nonce }) {
@@ -140,8 +141,10 @@ export async function loginWithWechatCode(code,wechatAuth,account=null) {
 
     try {
       const [result] = await connection.query(
-        'INSERT INTO users (account, password, nickname,wx_openid,avatar) VALUES (?, ?, ?, ?, ?)',
-        [targetAccount, hashedPassword, nickname, openid, userInfo.headimgurl]
+        `INSERT INTO users
+         (account, password, nickname, wx_openid, avatar, storage_key)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [targetAccount, hashedPassword, nickname, openid, userInfo.headimgurl, createStorageKey()]
       );
 
       user = { id: result.insertId, account: targetAccount, nickname, avatar: userInfo.headimgurl };
@@ -171,7 +174,7 @@ export async function loginWithWechatCode(code,wechatAuth,account=null) {
     if(result.affectedRows !== 1) throw new Error('账号绑定微信失败');
   }
 
-  const tokenPair = await issueTokenPair(user);
+  const tokenPair = await issueTokenPair(user, { recordLogin: !account });
 
   return {
     ...tokenPair,

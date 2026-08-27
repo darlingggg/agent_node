@@ -127,6 +127,194 @@ ALTER TABLE users ADD UNIQUE INDEX uk_users_wx_openid (wx_openid);
 -- 头像 URL 可能包含较长的微信/QQ CDN 查询参数，已有数据库执行一次
 ALTER TABLE users MODIFY COLUMN avatar VARCHAR(2048) DEFAULT '' COMMENT '用户头像';
 
--- QQ 互联登录：上线前执行一次
+-- QQ 互联登录
 ALTER TABLE users ADD COLUMN qq_openid VARCHAR(64) NULL COMMENT '关联 QQ openid';
 ALTER TABLE users ADD UNIQUE INDEX uk_users_qq_openid (qq_openid);
+
+-- AI token 汇总与持久化上下文：上线前按顺序执行一次 ================================
+-- sessions 当前实际存储消息，conversation_id 将消息归属到稳定的会话记录。
+ALTER TABLE sessions MODIFY COLUMN title VARCHAR(100) NULL COMMENT '会话标题';
+
+CREATE TABLE conversations (
+    id BIGINT PRIMARY KEY AUTO_INCREMENT COMMENT '会话ID',
+    account VARCHAR(50) NOT NULL COMMENT '用户账号',
+    project_id INT NOT NULL COMMENT '关联项目ID',
+    title VARCHAR(100) NOT NULL COMMENT '会话标题',
+    status VARCHAR(20) NOT NULL DEFAULT 'active' COMMENT 'active/deleted',
+    prompt_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '会话累计输入token',
+    completion_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '会话累计输出token',
+    total_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '会话累计总token',
+    current_context_tokens INT NOT NULL DEFAULT 0 COMMENT '当前持久化上下文长度',
+    context_limit INT NOT NULL DEFAULT 0 COMMENT '当前模型上下文上限',
+    summary MEDIUMTEXT NULL COMMENT '自动压缩后的历史摘要',
+    summarized_until_session_id BIGINT NULL COMMENT '摘要已覆盖到的sessions.id',
+    last_compressed_at TIMESTAMP NULL COMMENT '最后压缩时间',
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+    UNIQUE KEY uk_conversations_owner_title (account, project_id, title),
+    INDEX idx_conversations_project (account, project_id),
+    INDEX idx_conversations_updated (account, updated_at)
+) COMMENT 'AI会话汇总及持久化上下文';
+
+ALTER TABLE sessions
+  ADD COLUMN conversation_id BIGINT NULL COMMENT '关联conversations.id',
+  ADD COLUMN usage_settled TINYINT NOT NULL DEFAULT 0 COMMENT '本轮token是否已结算';
+
+CREATE INDEX idx_sessions_conversation ON sessions (conversation_id, id);
+
+-- 会话摘要按项目、状态和最近更新时间分页查询。
+CREATE INDEX idx_conversations_project_status_updated
+  ON conversations (account, project_id, status, updated_at, id);
+
+ALTER TABLE projects
+  ADD COLUMN ai_prompt_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '项目累计AI输入token',
+  ADD COLUMN ai_completion_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '项目累计AI输出token',
+  ADD COLUMN ai_total_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '项目累计AI总token';
+
+-- 将已有的按标题会话迁移到 conversations；历史 token 无法追溯，累计值从 0 开始。
+INSERT INTO conversations (account, project_id, title, status)
+SELECT account,
+       project_id,
+       title,
+       IF(title REGEXP '_delete_[0-9]{10}$', 'deleted', 'active')
+FROM sessions
+WHERE title IS NOT NULL
+GROUP BY account, project_id, title;
+
+UPDATE sessions s
+JOIN conversations c
+  ON c.account = s.account
+ AND c.project_id = s.project_id
+ AND c.title = s.title
+SET s.conversation_id = c.id
+WHERE s.conversation_id IS NULL;
+
+-- 历史消息不存在可结算的运行态 usage，标记为已结算；新建消息仍使用字段默认值 0。
+UPDATE sessions SET usage_settled = 1 WHERE conversation_id IS NOT NULL;
+
+-- 管理端权限、项目更新时间与软删除：执行一次 ================================
+-- 用户权限：super/admin 可访问管理端，normal 为普通用户，disabled 为禁用用户。
+ALTER TABLE users
+  ADD COLUMN role ENUM('super', 'admin', 'normal', 'disabled')
+  NOT NULL DEFAULT 'normal' COMMENT '用户权限' AFTER avatar;
+
+-- 请将首个管理账号设为 super，再使用管理端接口分配其他管理员。
+-- UPDATE users SET role = 'super' WHERE account = '你的账号';
+
+-- update_time 由项目文件写入、删除、上传、AI patch 及项目资料修改主动更新。
+-- deleted_at 用于软删除；历史上已经物理删除的数据无法通过本字段恢复。
+ALTER TABLE projects
+  ADD COLUMN update_time TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '项目最后更新时间' AFTER created_at,
+  ADD COLUMN deleted_at TIMESTAMP NULL DEFAULT NULL COMMENT '项目删除时间，NULL表示未删除' AFTER update_time;
+
+CREATE INDEX idx_projects_deleted_update
+  ON projects (deleted_at, update_time);
+
+-- 用户 COS 固定目录：执行一次 ==============================================
+-- storage_key 创建后不随 account 修改，用于 uploads/{storage_key}/ 目录。
+ALTER TABLE users
+  ADD COLUMN storage_key VARCHAR(64) NULL COMMENT '用户固定COS目录键' AFTER role;
+
+-- 已有用户沿用执行迁移时的账号目录，确保现有素材仍可访问。
+UPDATE users
+SET storage_key = account
+WHERE storage_key IS NULL OR storage_key = '';
+
+-- 如果某用户改过账号且素材仍在旧目录，请在执行下面的 NOT NULL 前手动修正：
+-- UPDATE users SET storage_key = '旧的桶目录名' WHERE id = 10000;
+
+ALTER TABLE users
+  MODIFY COLUMN storage_key VARCHAR(64) NOT NULL COMMENT '用户固定COS目录键';
+
+CREATE UNIQUE INDEX uk_users_storage_key ON users (storage_key);
+
+-- 管理端运营总览：北京时间活跃、AI日报与COS存储快照（执行一次） ==============
+ALTER TABLE users
+  ADD COLUMN last_login_at TIMESTAMP NULL DEFAULT NULL COMMENT '最后登录时间' AFTER created_at,
+  ADD COLUMN last_active_at TIMESTAMP NULL DEFAULT NULL COMMENT '最后活跃时间' AFTER last_login_at;
+
+CREATE INDEX idx_users_last_active_at ON users (last_active_at);
+
+CREATE TABLE ai_usage_daily (
+  metric_date DATE NOT NULL COMMENT '北京时间统计日期',
+  user_id INT NOT NULL COMMENT '用户ID',
+  project_id INT NOT NULL COMMENT '项目ID',
+  prompt_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '输入Token',
+  completion_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '输出Token',
+  total_tokens BIGINT NOT NULL DEFAULT 0 COMMENT '总Token',
+  model_calls BIGINT NOT NULL DEFAULT 0 COMMENT '模型调用次数',
+  failed_calls BIGINT NOT NULL DEFAULT 0 COMMENT '失败或取消轮次',
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (metric_date, user_id, project_id),
+  INDEX idx_ai_usage_daily_user_date (user_id, metric_date),
+  INDEX idx_ai_usage_daily_project_date (project_id, metric_date)
+) COMMENT 'AI每日用量汇总';
+
+CREATE TABLE user_storage_stats (
+  user_id INT PRIMARY KEY COMMENT '用户ID',
+  storage_key VARCHAR(64) NOT NULL COMMENT '用户固定COS目录键',
+  file_count BIGINT NOT NULL DEFAULT 0 COMMENT '文件数量，不含目录占位对象',
+  total_bytes BIGINT NOT NULL DEFAULT 0 COMMENT '文件总字节数',
+  image_count BIGINT NOT NULL DEFAULT 0 COMMENT '图片数量',
+  video_count BIGINT NOT NULL DEFAULT 0 COMMENT '视频数量',
+  other_count BIGINT NOT NULL DEFAULT 0 COMMENT '其他文件数量',
+  last_synced_at TIMESTAMP NULL DEFAULT NULL COMMENT '最近成功同步时间',
+  sync_status ENUM('never', 'success', 'error') NOT NULL DEFAULT 'never' COMMENT '同步状态',
+  error_message VARCHAR(500) NULL COMMENT '最近同步错误',
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  UNIQUE INDEX uk_user_storage_stats_storage_key (storage_key),
+  INDEX idx_user_storage_stats_total_bytes (total_bytes)
+) COMMENT '用户COS存储汇总';
+
+CREATE TABLE storage_daily_metrics (
+  metric_date DATE PRIMARY KEY COMMENT '北京时间统计日期',
+  file_count BIGINT NOT NULL DEFAULT 0 COMMENT '全站文件数量',
+  total_bytes BIGINT NOT NULL DEFAULT 0 COMMENT '全站文件总字节数',
+  orphan_file_count BIGINT NOT NULL DEFAULT 0 COMMENT '未匹配用户的文件数量',
+  orphan_bytes BIGINT NOT NULL DEFAULT 0 COMMENT '未匹配用户的文件字节数',
+  synced_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '同步完成时间'
+) COMMENT 'COS每日存储快照';
+
+-- AI 生图任务表（执行一次） ================================================
+CREATE TABLE IF NOT EXISTS ai_generated_images (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+  account VARCHAR(64) NOT NULL COMMENT '任务所属用户账号',
+  project_id BIGINT UNSIGNED NULL COMMENT '关联项目，可为空',
+  conversation_id BIGINT UNSIGNED NULL COMMENT '关联会话，可为空',
+  model VARCHAR(100) NOT NULL COMMENT '生成模型',
+  external_task_id VARCHAR(191) NULL COMMENT '图片服务商异步任务 ID',
+  prompt TEXT NOT NULL,
+  negative_prompt TEXT NULL,
+  reference_images JSON NULL COMMENT '图生图参考图片 URL 数组',
+  image_size VARCHAR(32) NOT NULL DEFAULT 'auto',
+  status VARCHAR(20) NOT NULL DEFAULT 'queued'
+    COMMENT 'queued/submitted/generating/storing/succeeded/failed',
+  temporary_url TEXT NULL COMMENT '服务商临时图片地址，仅用于尽快展示',
+  object_key VARCHAR(512) NULL COMMENT 'COS 永久对象键，不保存临时签名 URL',
+  content_type VARCHAR(64) NULL,
+  original_size BIGINT UNSIGNED NULL COMMENT '格式转换前字节数',
+  stored_size BIGINT UNSIGNED NULL COMMENT 'WebP 入库字节数',
+  width INT UNSIGNED NULL,
+  height INT UNSIGNED NULL,
+  error_message TEXT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  completed_at TIMESTAMP NULL DEFAULT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_ai_generated_images_external_task (external_task_id),
+  KEY idx_ai_generated_images_account_created (account, created_at),
+  KEY idx_ai_generated_images_conversation (account, conversation_id, created_at),
+  KEY idx_ai_generated_images_project (account, project_id, created_at),
+  KEY idx_ai_generated_images_status (status, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 已创建过旧版本表时执行一次，使 account 可与现有 users 表直接关联 ========
+ALTER TABLE ai_generated_images
+  CONVERT TO CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+
+-- 主 AI 生图任务关联：执行一次（新建和已有环境都在上方 CREATE 后执行） ========
+ALTER TABLE ai_generated_images
+  ADD COLUMN assistant_session_id BIGINT UNSIGNED NULL COMMENT '关联主AI回复的sessions.id，可为空' AFTER conversation_id,
+  ADD COLUMN tool_call_id VARCHAR(191) NULL COMMENT '关联主AI工具调用ID，可为空' AFTER assistant_session_id,
+  ADD INDEX idx_ai_generated_images_assistant_session (account, assistant_session_id, created_at),
+  ADD INDEX idx_ai_generated_images_tool_call (tool_call_id);
