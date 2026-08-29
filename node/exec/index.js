@@ -1,5 +1,6 @@
 import { exec } from 'child_process'
 import { promisify } from 'util'
+import fs from 'fs/promises'
 import path from 'path'
 import { CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN } from '../../key.js'
 
@@ -173,6 +174,108 @@ const runBuildStep = async ({ key, title, command, projectPath, send }) => {
   return { ...execRes, step: stepInfo }
 }
 
+/** 返回当前构建机需要的 Rolldown 原生包名；其他平台交给 pnpm 正常处理。 */
+const getRolldownBindingName = () => {
+  if (process.platform !== 'linux') return null
+  if (process.arch !== 'x64' && process.arch !== 'arm64') return null
+  const isGlibc = Boolean(process.report?.getReport?.().header?.glibcVersionRuntime)
+  return `@rolldown/binding-linux-${process.arch}-${isGlibc ? 'gnu' : 'musl'}`
+}
+
+/**
+ * 从已安装的 Rolldown 清单读取与主包严格匹配的原生包版本。
+ * pnpm 的虚拟存储目录可能包含多个版本，因此逐个读取 package.json，优先返回声明了当前平台包的版本。
+ */
+const findRolldownBinding = async (projectPath) => {
+  const bindingName = getRolldownBindingName()
+  if (!bindingName) return null
+
+  const virtualStoreDir = path.join(projectPath, 'node_modules', '.pnpm')
+  let entries
+  try {
+    entries = await fs.readdir(virtualStoreDir, { withFileTypes: true })
+  } catch {
+    return null
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.startsWith('rolldown@')) continue
+    const rolldownDir = path.join(virtualStoreDir, entry.name, 'node_modules', 'rolldown')
+    try {
+      const pkg = JSON.parse(await fs.readFile(path.join(rolldownDir, 'package.json'), 'utf-8'))
+      const version = pkg.optionalDependencies?.[bindingName]
+      if (!version) continue
+
+      const bindingPath = path.join(
+        virtualStoreDir,
+        entry.name,
+        'node_modules',
+        ...bindingName.split('/'),
+        'package.json'
+      )
+      const installed = await fs.access(bindingPath).then(() => true, () => false)
+      return { bindingName, version, installed }
+    } catch {
+      // Ignore unrelated or incomplete virtual-store entries.
+    }
+  }
+  return null
+}
+
+/**
+ * pnpm 偶尔会静默跳过 Rolldown 的间接 optionalDependency。
+ * 临时把匹配的原生包作为直接开发依赖安装，安装后恢复清单，避免 Linux 依赖污染 WebContainer 模板。
+ */
+const ensureRolldownBinding = async (projectPath, send) => {
+  const binding = await findRolldownBinding(projectPath)
+  if (!binding || binding.installed) return null
+
+  const packagePath = path.join(projectPath, 'package.json')
+  const lockPath = path.join(projectPath, 'pnpm-lock.yaml')
+  const originalPackage = await fs.readFile(packagePath)
+  const originalLock = await fs.readFile(lockPath).catch(() => null)
+
+  try {
+    return await runBuildStep({
+      key: 'native-binding',
+      title: '修复原生依赖',
+      command: `pnpm add --save-dev --save-exact ${binding.bindingName}@${binding.version} --config.confirmModulesPurge=false`,
+      projectPath,
+      send,
+    })
+  } finally {
+    await fs.writeFile(packagePath, originalPackage)
+    if (originalLock) await fs.writeFile(lockPath, originalLock)
+  }
+}
+
+/**
+ * 构建期间为 pnpm 11 提供最小依赖脚本白名单。
+ * 生成项目都是单包项目；构建完成后恢复原文件，避免覆盖用户配置。
+ */
+const applyTemporaryPnpmBuildPolicy = async (projectPath) => {
+  const workspacePath = path.join(projectPath, 'pnpm-workspace.yaml')
+  const original = await fs.readFile(workspacePath).catch(() => null)
+  const originalText = original?.toString('utf-8') || ''
+  const nodeLinker = originalText.match(/^\s*nodeLinker:\s*([^\s#]+)/m)?.[1]
+  const policyLines = [
+    'packages:',
+    "  - '.'",
+  ]
+  if (nodeLinker) policyLines.push(`nodeLinker: ${nodeLinker}`)
+  policyLines.push(
+    'allowBuilds:',
+    '  esbuild: true',
+    '',
+  )
+  await fs.writeFile(workspacePath, policyLines.join('\n'), 'utf-8')
+
+  return async () => {
+    if (original) await fs.writeFile(workspacePath, original)
+    else await fs.rm(workspacePath, { force: true })
+  }
+}
+
 /**
  * 构建项目并部署到 Cloudflare Pages
  * @param {string} projectPath 项目路径
@@ -200,21 +303,31 @@ export const buildCommand = async (projectPath, send = () => {}) => {
     },
   })
 
-  const installRes = await runBuildStep({
-    key: 'install',
-    title: '安装依赖',
-    command: 'pnpm install',
-    projectPath,
-    send,
-  })
+  const restorePnpmBuildPolicy = await applyTemporaryPnpmBuildPolicy(projectPath)
+  let installRes
+  let nativeBindingRes
+  let buildRes
+  try {
+    installRes = await runBuildStep({
+      key: 'install',
+      title: '安装依赖',
+      command: 'pnpm install --config.optional=true --config.confirmModulesPurge=false',
+      projectPath,
+      send,
+    })
 
-  const buildRes = await runBuildStep({
-    key: 'build',
-    title: '构建项目',
-    command: 'pnpm build',
-    projectPath,
-    send,
-  })
+    nativeBindingRes = await ensureRolldownBinding(projectPath, send)
+
+    buildRes = await runBuildStep({
+      key: 'build',
+      title: '构建项目',
+      command: 'pnpm build',
+      projectPath,
+      send,
+    })
+  } finally {
+    await restorePnpmBuildPolicy()
+  }
 
   const uploadRes = await runBuildStep({
     key: 'deploy',
@@ -237,7 +350,7 @@ export const buildCommand = async (projectPath, send = () => {}) => {
   const totalDuration = Date.now() - startedAt
   const completedAt = new Date().toISOString()
 
-  const steps = [installRes.step, buildRes.step, uploadRes.step]
+  const steps = [installRes.step, nativeBindingRes?.step, buildRes.step, uploadRes.step].filter(Boolean)
   const result = {
     success: true,
     code: 0,
