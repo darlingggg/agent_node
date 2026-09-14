@@ -1186,7 +1186,6 @@ app.post('/project/build',authJWT,async(req,res)=>{
     if (clientClosed) return
     send({ event: 'error', data: '错误信息: \n' + err.message })
     res.end()
-    res.cc(1, err.message);
   }
 })
 
