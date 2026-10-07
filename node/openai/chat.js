@@ -96,18 +96,51 @@ async function streamModelResponse(context, tracker, signal, onEvent) {
   return { assistantText, toolCalls };
 }
 
+// async function executeToolCalls({
+//   toolCalls,
+//   assistantText,
+//   context,
+//   projectDirPath,
+//   assistantSessionId,
+//   toolContext,
+//   onEvent,
+//   signal,
+// }) {
+//   context.push({ role: 'assistant', content: assistantText || null, tool_calls: toolCalls });
+//   for (const toolCall of toolCalls) {
+//     const { id } = toolCall;
+//     const name = toolCall.function.name;
+//     const handler = functionMap[name];
+//     if (!handler) throw new Error(`未注册的工具: ${name}`);
+
+//     const args = bindProjectDirPath(name, parseToolArguments(toolCall), projectDirPath);
+//     onEvent({ event: 'tool_start', data: `正在执行工具: ${name} $$ 参数: ${JSON.stringify(args)}` });
+//     throwIfAborted(signal);
+//     handler(args, {
+//       ...toolContext,
+//       assistantSessionId,
+//       toolCallId: id,
+//       onEvent,
+//       signal,
+//     }).then((result)=>{
+//       throwIfAborted(signal);
+//       context.push({ role: 'tool', content: result, tool_call_id: id });
+//       onEvent({ event: 'tool_end', data: `工具执行完毕: ${name} $$ 结果: ${result}` });
+//     })
+//   }
+// }
+
 async function executeToolCalls({
-  toolCalls,
-  assistantText,
-  context,
-  projectDirPath,
-  assistantSessionId,
-  toolContext,
-  onEvent,
-  signal,
+  toolCalls, assistantText, context, projectDirPath,
+  assistantSessionId, toolContext, onEvent, signal,
 }) {
-  context.push({ role: 'assistant', content: assistantText || null, tool_calls: toolCalls });
-  for (const toolCall of toolCalls) {
+  context.push({
+    role: 'assistant',
+    content: assistantText || null,
+    tool_calls: toolCalls,
+  });
+
+  const results = await Promise.allSettled(toolCalls.map(async (toolCall) => {
     const { id } = toolCall;
     const name = toolCall.function.name;
     const handler = functionMap[name];
@@ -116,6 +149,7 @@ async function executeToolCalls({
     const args = bindProjectDirPath(name, parseToolArguments(toolCall), projectDirPath);
     onEvent({ event: 'tool_start', data: `正在执行工具: ${name} $$ 参数: ${JSON.stringify(args)}` });
     throwIfAborted(signal);
+
     const result = await handler(args, {
       ...toolContext,
       assistantSessionId,
@@ -123,10 +157,28 @@ async function executeToolCalls({
       onEvent,
       signal,
     });
+
     throwIfAborted(signal);
-    context.push({ role: 'tool', content: result, tool_call_id: id });
     onEvent({ event: 'tool_end', data: `工具执行完毕: ${name} $$ 结果: ${result}` });
-  }
+    return { role: 'tool', content: result, tool_call_id: id };
+  }));
+
+  throwIfAborted(signal);
+  context.push(...results.map((item, index) => {
+    if (item.status === 'fulfilled') return item.value;
+
+    const error = String(item.reason?.message ?? item.reason);
+    const toolCall = toolCalls[index];
+    onEvent({
+      event: 'tool_error',
+      data: `工具执行失败: ${toolCall.function.name} $$ 错误: ${error}`,
+    });
+    return {
+      role: 'tool',
+      content: `工具执行失败: ${error}`,
+      tool_call_id: toolCall.id,
+    };
+  }));
 }
 
 async function runChat({
