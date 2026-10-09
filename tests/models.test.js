@@ -3,7 +3,7 @@ import { after, test } from 'node:test';
 import connection from '../Mysql/index.js';
 import { modelRequestOptions, normalizeModel, resolveModelConfig } from '../node/models/config.js';
 import { nextModelSyncTime } from '../node/models/scheduler.js';
-import { setDefaultModel, syncModels } from '../node/models/service.js';
+import { setDefaultModel, setModelAvailability, syncModels } from '../node/models/service.js';
 
 after(() => connection.end());
 
@@ -149,6 +149,24 @@ test(
       assert.equal(fallback.find((row) => row.model_key === 'c').is_default, 0);
       await assert.rejects(setDefaultModel('c', { pool }), /失效/);
       assert.deepEqual(await snapshot(), fallback);
+      // 管理员禁用与目录同步互不覆盖，默认模型始终指向可用模型。
+      await setModelAvailability('a', false, { pool });
+      assert.equal((await snapshot()).find((row) => row.model_key === 'b').is_default, 1);
+      await sync([{ id: 'a' }, { id: 'b' }]);
+      assert.equal((await snapshot()).find((row) => row.model_key === 'a').enabled, 0);
+      await assert.rejects(setDefaultModel('a', { pool }), /失效/);
+      await assert.rejects(setModelAvailability('c', true, { pool }), /下线/);
+      await assert.rejects(setModelAvailability('a', 1, { pool }), /布尔/);
+      await assert.rejects(setModelAvailability('unknown', false, { pool }), /不存在/);
+      await setModelAvailability('a', true, { pool });
+      assert.equal((await snapshot()).find((row) => row.model_key === 'a').enabled, 1);
+      await setModelAvailability('a', false, { pool });
+      await setModelAvailability('b', false, { pool });
+      assert.ok((await snapshot()).every((row) => row.enabled === 0 && row.is_default === 0));
+      await sync([{ id: 'a' }, { id: 'b' }]);
+      assert.ok((await snapshot()).every((row) => row.enabled === 0 && row.is_default === 0));
+      await setModelAvailability('a', true, { pool });
+      await setModelAvailability('b', true, { pool });
       const empty = await sync([]);
       assert.equal(empty.disabled, 2);
       assert.ok((await snapshot()).every((row) => row.enabled === 0 && row.is_default === 0));

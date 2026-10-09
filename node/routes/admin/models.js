@@ -1,5 +1,5 @@
 import express from 'express';
-import { listModels, setDefaultModel } from '../../models/service.js';
+import { listModels, setDefaultModel, setModelAvailability } from '../../models/service.js';
 import { getModelSyncState, nextModelSyncTime, runModelSync } from '../../models/scheduler.js';
 
 const router = express.Router();
@@ -22,6 +22,15 @@ router.post('/sync', async (_req, res) => {
     res.cc(0, result.skipped ? result.reason : '模型同步完成', result);
   } catch (error) {
     res.cc(1, `模型同步失败：${error.message}`);
+  }
+});
+
+router.patch('/availability', async (req, res) => {
+  try {
+    const result = await setModelAvailability(req.body?.model, req.body?.enabled);
+    res.cc(0, result.enabled ? '模型已启用' : '模型已禁用', result);
+  } catch (error) {
+    res.cc(1, error.message);
   }
 });
 

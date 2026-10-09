@@ -6,7 +6,7 @@ const SYNC_LOCK = 'gameAgent:ai-models-sync';
 
 export async function listModels({ includeDisabled = false } = {}) {
   const [rows] = await connection.query(
-    `SELECT id, model_key, model_name, capabilities, effort, enabled, is_default, created_at, updated_at
+    `SELECT id, model_key, model_name, capabilities, effort, enabled, manual_disabled, provider_available, is_default, created_at, updated_at
        FROM ai_models ${includeDisabled ? '' : 'WHERE enabled = 1'} ORDER BY id`,
   );
   return rows.map((row) => ({
@@ -48,6 +48,44 @@ async function ensureDefaultModel(db) {
   await db.query('UPDATE ai_models SET is_default = 0 WHERE is_default = 1');
   if (models.length)
     await db.query('UPDATE ai_models SET is_default = 1 WHERE id = ?', [models[0].id]);
+}
+
+/** 人工开关与服务商可用性分别保存，目录同步不会覆盖管理员设置。 */
+export async function setModelAvailability(modelKey, enabled, { pool = connection } = {}) {
+  if (typeof modelKey !== 'string' || !modelKey.trim()) throw new Error('模型标识不能为空');
+  if (typeof enabled !== 'boolean') throw new Error('enabled 必须是布尔值');
+  const db = await pool.getConnection();
+  let locked = false;
+  let inTransaction = false;
+  try {
+    const [[lock]] = await db.query('SELECT GET_LOCK(?, 0) AS acquired', [SYNC_LOCK]);
+    locked = Number(lock.acquired) === 1;
+    if (!locked) throw new Error('模型配置正在更新，请稍后重试');
+    await db.beginTransaction();
+    inTransaction = true;
+    const [models] = await db.query(
+      'SELECT id, provider_available FROM ai_models WHERE model_key = ? LIMIT 1 FOR UPDATE',
+      [modelKey],
+    );
+    if (!models.length) throw new Error('模型不存在');
+    if (enabled && !Number(models[0].provider_available)) {
+      throw new Error('服务商已下线此模型，请同步目录后再启用');
+    }
+    await db.query('UPDATE ai_models SET manual_disabled = ?, enabled = ? WHERE id = ?', [
+      enabled ? 0 : 1, enabled ? 1 : 0, models[0].id,
+    ]);
+    await ensureDefaultModel(db);
+    const [defaults] = await db.query('SELECT model_key FROM ai_models WHERE is_default = 1 LIMIT 1');
+    await db.commit();
+    inTransaction = false;
+    return { modelKey, enabled: enabled ? 1 : 0, defaultModel: defaults[0]?.model_key || null };
+  } catch (error) {
+    if (inTransaction) await db.rollback();
+    throw error;
+  } finally {
+    if (locked) await db.query('SELECT RELEASE_LOCK(?)', [SYNC_LOCK]).catch(() => {});
+    db.release();
+  }
 }
 
 export async function setDefaultModel(modelKey, { pool = connection } = {}) {
@@ -103,7 +141,8 @@ export async function syncModels({
         `INSERT INTO ai_models (model_key, model_name, capabilities, effort, enabled)
          VALUES (?, ?, ?, ?, 1)
          ON DUPLICATE KEY UPDATE model_name = VALUES(model_name),
-           capabilities = VALUES(capabilities), effort = VALUES(effort), enabled = 1`,
+           capabilities = VALUES(capabilities), effort = VALUES(effort),
+           provider_available = 1, enabled = IF(manual_disabled = 1, 0, 1)`,
         [
           model.modelKey,
           model.modelName,
@@ -114,7 +153,7 @@ export async function syncModels({
     }
     const keys = models.map((model) => model.modelKey);
     const [disabled] = await db.query(
-      `UPDATE ai_models SET enabled = 0 WHERE enabled = 1${keys.length ? ' AND model_key NOT IN (?)' : ''}`,
+      `UPDATE ai_models SET enabled = 0, provider_available = 0 WHERE provider_available = 1${keys.length ? ' AND model_key NOT IN (?)' : ''}`,
       keys.length ? [keys] : [],
     );
     await ensureDefaultModel(db);

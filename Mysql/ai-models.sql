@@ -18,6 +18,12 @@ ALTER TABLE ai_models
   ADD COLUMN is_default TINYINT NOT NULL DEFAULT 0 COMMENT '是否默认模型',
   ADD COLUMN default_slot TINYINT GENERATED ALWAYS AS (IF(is_default = 1, 1, NULL)) VIRTUAL UNIQUE COMMENT '保证最多一个默认模型';
 
+ALTER TABLE ai_models
+  ADD COLUMN manual_disabled TINYINT NOT NULL DEFAULT 0 COMMENT '管理员人工禁用，不受同步覆盖',
+  ADD COLUMN provider_available TINYINT NOT NULL DEFAULT 1 COMMENT '服务商目录是否仍提供模型';
+
+UPDATE ai_models SET provider_available = enabled WHERE manual_disabled = 0;
+
 -- 以下 ADD COLUMN 只在字段不存在时执行；migrate-ai-models.js 会检查后执行，可重复运行。
 ALTER TABLE conversations
   ADD COLUMN model VARCHAR(128) NULL COMMENT '当前选择的模型标识',

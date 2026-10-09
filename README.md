@@ -172,10 +172,14 @@ AI 对话由后端托管：创建用户消息及助手消息后启动模型调�
 | 会话管理 | `/conversation/*`、`/session/*` |
 | 图像生成 | `/agent/image-gen`、`/agent/image-gen/tasks/*` |
 | 版本与部署 | `/snapshot/*`、`/temp/*`、`/project/build`、`/project/version` |
-| 模型 | `/models`、`/admin/models`、`/admin/models/sync`、`/admin/models/default` |
+| 模型 | `/models`、`/admin/models`、`/admin/models/sync`、`/admin/models/default`、`/admin/models/availability` |
 | 管理控制台 | `/admin/dashboard/*`、`/admin/users/*`、`/admin/projects/*`、`/admin/assets`、`/admin/image-generations/*` |
 
 普通 JSON 响应采用 `{ status, message, data }`，成功 `status` 为 `0`，响应字段由中间件转为 camelCase。SSE 接口使用独立事件格式。需要登录的接口使用 `Authorization: Bearer <Access Token>`；管理端统一经过 JWT 和管理权限校验。
+
+管理员可通过 `PATCH /admin/models/availability`，传入 `{ "model": "模型标识", "enabled": false }` 禁用模型，传 `true` 重新启用。人工禁用独立保存，每日目录同步不会覆盖；服务商已下线的模型不能手动启用。禁用默认模型后会自动选择其他可用模型，全部禁用时清空默认值。前台 `/models` 仅返回可用模型，admin 操作完成后立即刷新，并每 15 秒读取模型目录以反映外部修改。
+
+上线此变更前运行 `pnpm db:migrate:models`，为已有模型目录补齐 `manual_disabled` 和 `provider_available`。运营总览的累计 Token 来自所有项目的累计用量（包括归档项目），与 7 / 30 天的期间用量分开展示；统计从系统首次记录用量开始。
 
 当前部分基础文件复制、读取、写入和删除接口没有 JWT 中间件。对外部署时，应限制这些接口的访问范围或补齐鉴权；完整接口参数及权限以 `node/routes/` 中的实现为准。
 

@@ -84,6 +84,25 @@ test(
       const changedDefault = await (await setDefault(adminToken, 'model-test-b')).json();
       assert.equal(changedDefault.status, 0);
       assert.equal((await selectChatModel({})).model, 'model-test-b');
+      const availability = (token, model, enabled) => fetch(base + '/admin/models/availability', {
+        method: 'PATCH',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, enabled }),
+      });
+      assert.equal((await availability(userToken, 'model-test-b', false)).status, 403);
+      assert.equal((await availability(null, 'model-test-b', false)).status, 401);
+      assert.equal((await (await availability(adminToken, 'unknown', false)).json()).status, 1);
+      assert.equal((await (await availability(adminToken, 'model-test-b', 'false')).json()).status, 1);
+      const disabledModel = await (await availability(adminToken, 'model-test-b', false)).json();
+      assert.equal(disabledModel.status, 0);
+      assert.equal(disabledModel.data.defaultModel, 'model-test-a');
+      assert.deepEqual((await (await request('/models', userToken)).json()).data.map((model) => model.modelKey), ['model-test-a']);
+      await request('/admin/models/sync', adminToken, 'POST');
+      const persisted = (await (await request('/admin/models', adminToken)).json()).data.list.find((model) => model.modelKey === 'model-test-b');
+      assert.equal(persisted.enabled, 0);
+      assert.equal(persisted.manualDisabled, 1);
+      assert.equal((await (await availability(adminToken, 'model-test-b', true)).json()).status, 0);
+      await setDefault(adminToken, 'model-test-b');
       await assert.rejects(
         db.query("UPDATE ai_models SET is_default = 1 WHERE model_key = 'model-test-a'"),
         { code: 'ER_DUP_ENTRY' },
