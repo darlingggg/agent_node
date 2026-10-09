@@ -13,7 +13,8 @@ export function getBeijingDateKey(date = new Date()) {
 export function getBeijingDateRange(days, now = new Date()) {
   const endDate = getBeijingDateKey(now);
   const endParts = endDate.split('-').map(Number);
-  const endBeijingMidnightUtc = Date.UTC(endParts[0], endParts[1] - 1, endParts[2]) - BEIJING_OFFSET_MS;
+  const endBeijingMidnightUtc =
+    Date.UTC(endParts[0], endParts[1] - 1, endParts[2]) - BEIJING_OFFSET_MS;
   const startUtc = new Date(endBeijingMidnightUtc - (days - 1) * 24 * 60 * 60 * 1000);
   const endExclusiveUtc = new Date(endBeijingMidnightUtc + 24 * 60 * 60 * 1000);
 
@@ -31,9 +32,9 @@ export function getBeijingDateRange(days, now = new Date()) {
 export function listBeijingDates(startDate, days) {
   const [year, month, day] = startDate.split('-').map(Number);
   const start = Date.UTC(year, month - 1, day);
-  return Array.from({ length: days }, (_, index) => (
-    new Date(start + index * 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
-  ));
+  return Array.from({ length: days }, (_, index) =>
+    new Date(start + index * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+  );
 }
 
 function formatUtcSqlDate(date) {

@@ -12,12 +12,16 @@ router.get('/', async (req, res) => {
       marker: String(req.query.marker || ''),
       userId: req.query.userId,
     });
-    res.cc(0, '获取成功', createPageResult(result.rows, {
-      ...pagination,
-      total: null,
-      hasMore: result.hasMore,
-      nextMarker: result.nextMarker,
-    }));
+    res.cc(
+      0,
+      '获取成功',
+      createPageResult(result.rows, {
+        ...pagination,
+        total: null,
+        hasMore: result.hasMore,
+        nextMarker: result.nextMarker,
+      }),
+    );
   } catch (error) {
     res.cc(1, error.message);
   }

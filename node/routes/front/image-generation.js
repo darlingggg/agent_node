@@ -5,7 +5,7 @@ import {
   getPublicImageGenerationTask,
   listImageGenerationTasks,
   subscribeImageGenerationTask,
-} from '../../imageGeneration/index.js';
+} from '../../imageGeneration.js';
 import { markUserActive } from '../../utils/activity.js';
 import { prepareSse, writeSse } from './sse.js';
 

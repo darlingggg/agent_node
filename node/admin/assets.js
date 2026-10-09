@@ -26,7 +26,7 @@ async function getUsersByStorageKey(userId) {
     `SELECT id, account, nickname, storage_key
      FROM users
      ${where}`,
-    params
+    params,
   );
 
   if (where && users.length === 0) throw new Error('用户不存在');
@@ -61,9 +61,8 @@ function getStorageKeyFromObjectKey(key) {
 /** 分页查询所有用户上传到 COS 的素材，userId 可选。 */
 export async function getUploadedAssets({ page, pageSize, marker = '', userId }) {
   const usersByStorageKey = await getUsersByStorageKey(userId);
-  const selectedUser = userId !== undefined && userId !== ''
-    ? usersByStorageKey.values().next().value
-    : null;
+  const selectedUser =
+    userId !== undefined && userId !== '' ? usersByStorageKey.values().next().value : null;
   const prefix = selectedUser ? `uploads/${selectedUser.storage_key}/` : 'uploads/';
   const pageMarker = await resolvePageMarker({ prefix, page, pageSize, marker });
 
@@ -73,34 +72,37 @@ export async function getUploadedAssets({ page, pageSize, marker = '', userId })
 
   const data = await listObjects({ prefix, marker: pageMarker, maxKeys: pageSize });
   const contents = getContents(data);
-  const rows = await Promise.all(contents.map(async (item) => {
-    const key = String(item.Key || '');
-    const storageKey = getStorageKeyFromObjectKey(key);
-    const user = storageKey ? usersByStorageKey.get(storageKey) : null;
-    const isDirectory = key.endsWith('/');
-    const extension = path.posix.extname(key).toLowerCase();
-    const relativePath = storageKey ? key.slice(`uploads/${storageKey}/`.length) : key;
+  const rows = await Promise.all(
+    contents.map(async (item) => {
+      const key = String(item.Key || '');
+      const storageKey = getStorageKeyFromObjectKey(key);
+      const user = storageKey ? usersByStorageKey.get(storageKey) : null;
+      const isDirectory = key.endsWith('/');
+      const extension = path.posix.extname(key).toLowerCase();
+      const relativePath = storageKey ? key.slice(`uploads/${storageKey}/`.length) : key;
 
-    return {
-      key,
-      fileName: isDirectory ? '' : path.posix.basename(key),
-      relativePath,
-      source: relativePath === 'ai_generated' || relativePath.startsWith('ai_generated/')
-        ? 'ai_generated'
-        : 'user_upload',
-      extension,
-      size: Number(item.Size) || 0,
-      etag: String(item.ETag || '').replace(/^"|"$/g, ''),
-      storageClass: item.StorageClass || null,
-      lastModified: item.LastModified || null,
-      isDirectory,
-      url: isDirectory ? null : await getSignedObjectUrl(key),
-      storageKey,
-      userId: user?.id ?? null,
-      account: user?.account ?? null,
-      userNickname: user?.nickname ?? null,
-    };
-  }));
+      return {
+        key,
+        fileName: isDirectory ? '' : path.posix.basename(key),
+        relativePath,
+        source:
+          relativePath === 'ai_generated' || relativePath.startsWith('ai_generated/')
+            ? 'ai_generated'
+            : 'user_upload',
+        extension,
+        size: Number(item.Size) || 0,
+        etag: String(item.ETag || '').replace(/^"|"$/g, ''),
+        storageClass: item.StorageClass || null,
+        lastModified: item.LastModified || null,
+        isDirectory,
+        url: isDirectory ? null : await getSignedObjectUrl(key),
+        storageKey,
+        userId: user?.id ?? null,
+        account: user?.account ?? null,
+        userNickname: user?.nickname ?? null,
+      };
+    }),
+  );
 
   const hasMore = isTruncated(data?.IsTruncated);
   return {

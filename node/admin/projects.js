@@ -44,7 +44,7 @@ export async function getAllProjects({ pageSize, offset, userId, account }) {
      FROM projects p
      LEFT JOIN users u ON u.account = p.account
      ${where}`,
-    params
+    params,
   );
 
   const [rows] = await connection.query(
@@ -59,7 +59,7 @@ export async function getAllProjects({ pageSize, offset, userId, account }) {
      ${where}
      ORDER BY p.update_time DESC, p.created_at DESC, p.id DESC
      LIMIT ? OFFSET ?`,
-    [...params, pageSize, offset]
+    [...params, pageSize, offset],
   );
 
   return { rows, total: Number(countRow.total) || 0 };
@@ -79,7 +79,7 @@ export async function getAdminProjectDetail(rawProjectId, { pageSize, offset }) 
      FROM projects p
      LEFT JOIN users u ON u.account = p.account
      WHERE p.id = ?`,
-    [projectId]
+    [projectId],
   );
 
   if (projects.length === 0) throw new Error('项目不存在');
@@ -89,7 +89,7 @@ export async function getAdminProjectDetail(rawProjectId, { pageSize, offset }) 
     `SELECT COUNT(*) AS total
      FROM conversations
      WHERE project_id = ? AND account = ?`,
-    [projectId, project.account]
+    [projectId, project.account],
   );
   const [conversations] = await connection.query(
     `SELECT id, account, project_id, title, status,
@@ -101,7 +101,7 @@ export async function getAdminProjectDetail(rawProjectId, { pageSize, offset }) 
      WHERE project_id = ? AND account = ?
      ORDER BY updated_at DESC, id DESC
      LIMIT ? OFFSET ?`,
-    [projectId, project.account, pageSize, offset]
+    [projectId, project.account, pageSize, offset],
   );
 
   return {

@@ -25,7 +25,10 @@ export function parsePagination(query = {}) {
   };
 }
 
-export function createPageResult(list, { page, pageSize, total = null, offset: _offset, ...extra }) {
+export function createPageResult(
+  list,
+  { page, pageSize, total = null, offset: _offset, ...extra },
+) {
   return {
     list,
     pagination: {

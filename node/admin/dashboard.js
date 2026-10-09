@@ -27,9 +27,20 @@ export function parseDashboardDays(rawDays) {
 export async function getDashboardOverview(days) {
   const range = getBeijingDateRange(days);
   const [
-    [[userSummary]], [[projectSummary]], [[aiSummary]], [[storageSummary]],
-    [userTrend], [projectTrend], [aiTrend], [storageTrend],
-    [usersByTokens], [projectsByTokens], [usersByStorage], [roleRows], [typeRows], [[storageLock]],
+    [[userSummary]],
+    [[projectSummary]],
+    [[aiSummary]],
+    [[storageSummary]],
+    [userTrend],
+    [projectTrend],
+    [aiTrend],
+    [storageTrend],
+    [usersByTokens],
+    [projectsByTokens],
+    [usersByStorage],
+    [roleRows],
+    [typeRows],
+    [[storageLock]],
   ] = await Promise.all([
     connection.query(
       `SELECT COUNT(*) AS total,
@@ -37,7 +48,12 @@ export async function getDashboardOverview(days) {
               SUM(last_active_at >= FROM_UNIXTIME(?) AND last_active_at < FROM_UNIXTIME(?)) AS active_count,
               SUM(role = 'disabled') AS disabled_count
        FROM users`,
-      [range.startEpochSeconds, range.endExclusiveEpochSeconds, range.startEpochSeconds, range.endExclusiveEpochSeconds]
+      [
+        range.startEpochSeconds,
+        range.endExclusiveEpochSeconds,
+        range.startEpochSeconds,
+        range.endExclusiveEpochSeconds,
+      ],
     ),
     connection.query(
       `SELECT COUNT(*) AS total,
@@ -45,7 +61,7 @@ export async function getDashboardOverview(days) {
               SUM(deleted_at IS NULL) AS active_count,
               SUM(deleted_at IS NOT NULL) AS deleted_count
        FROM projects`,
-      [range.startEpochSeconds, range.endExclusiveEpochSeconds]
+      [range.startEpochSeconds, range.endExclusiveEpochSeconds],
     ),
     connection.query(
       `SELECT
@@ -59,7 +75,7 @@ export async function getDashboardOverview(days) {
          COALESCE(SUM(failed_calls), 0) AS failed_calls
        FROM ai_usage_daily
        WHERE metric_date BETWEEN ? AND ?`,
-      [range.startDate, range.endDate]
+      [range.startDate, range.endDate],
     ),
     connection.query(
       `SELECT COALESCE(SUM(s.file_count), 0) AS file_count,
@@ -76,7 +92,7 @@ export async function getDashboardOverview(days) {
               MAX(s.error_message) AS error_message,
               COALESCE((SELECT orphan_file_count FROM storage_daily_metrics ORDER BY metric_date DESC LIMIT 1), 0) AS orphan_file_count,
               COALESCE((SELECT orphan_bytes FROM storage_daily_metrics ORDER BY metric_date DESC LIMIT 1), 0) AS orphan_bytes
-       FROM user_storage_stats s`
+       FROM user_storage_stats s`,
     ),
     connection.query(
       `SELECT ${BEIJING_DATE_FROM_TIMESTAMP_SQL} AS metric_date,
@@ -84,7 +100,7 @@ export async function getDashboardOverview(days) {
        FROM users
        WHERE created_at >= FROM_UNIXTIME(?) AND created_at < FROM_UNIXTIME(?)
        GROUP BY metric_date`,
-      [range.startEpochSeconds, range.endExclusiveEpochSeconds]
+      [range.startEpochSeconds, range.endExclusiveEpochSeconds],
     ),
     connection.query(
       `SELECT ${BEIJING_DATE_FROM_TIMESTAMP_SQL} AS metric_date,
@@ -92,7 +108,7 @@ export async function getDashboardOverview(days) {
        FROM projects
        WHERE created_at >= FROM_UNIXTIME(?) AND created_at < FROM_UNIXTIME(?)
        GROUP BY metric_date`,
-      [range.startEpochSeconds, range.endExclusiveEpochSeconds]
+      [range.startEpochSeconds, range.endExclusiveEpochSeconds],
     ),
     connection.query(
       `SELECT DATE_FORMAT(metric_date, '%Y-%m-%d') AS metric_date,
@@ -104,7 +120,7 @@ export async function getDashboardOverview(days) {
        FROM ai_usage_daily
        WHERE metric_date BETWEEN ? AND ?
        GROUP BY metric_date`,
-      [range.startDate, range.endDate]
+      [range.startDate, range.endDate],
     ),
     connection.query(
       `SELECT DATE_FORMAT(metric_date, '%Y-%m-%d') AS metric_date,
@@ -112,7 +128,7 @@ export async function getDashboardOverview(days) {
        FROM storage_daily_metrics
        WHERE metric_date BETWEEN ? AND ?
        ORDER BY metric_date`,
-      [range.startDate, range.endDate]
+      [range.startDate, range.endDate],
     ),
     connection.query(
       `SELECT u.id AS user_id, u.account, u.nickname, u.avatar,
@@ -122,7 +138,7 @@ export async function getDashboardOverview(days) {
        GROUP BY u.id, u.account, u.nickname, u.avatar
        HAVING total_tokens > 0
        ORDER BY total_tokens DESC, u.id ASC
-       LIMIT 10`
+       LIMIT 10`,
     ),
     connection.query(
       `SELECT p.id AS project_id, p.title, p.account, u.nickname AS user_nickname,
@@ -131,7 +147,7 @@ export async function getDashboardOverview(days) {
        LEFT JOIN users u ON u.account = p.account
        WHERE p.ai_total_tokens > 0
        ORDER BY p.ai_total_tokens DESC, p.id ASC
-       LIMIT 10`
+       LIMIT 10`,
     ),
     connection.query(
       `SELECT u.id AS user_id, u.account, u.nickname, u.avatar,
@@ -139,7 +155,7 @@ export async function getDashboardOverview(days) {
        FROM user_storage_stats s
        JOIN users u ON u.id = s.user_id
        ORDER BY s.total_bytes DESC, s.file_count DESC, u.id ASC
-       LIMIT 10`
+       LIMIT 10`,
     ),
     connection.query('SELECT role, COUNT(*) AS count FROM users GROUP BY role'),
     connection.query('SELECT type, COUNT(*) AS count FROM projects GROUP BY type'),
@@ -172,7 +188,12 @@ export async function getDashboardOverview(days) {
   });
 
   return {
-    range: { days, startDate: range.startDate, endDate: range.endDate, timezone: '北京时间（UTC+8）' },
+    range: {
+      days,
+      startDate: range.startDate,
+      endDate: range.endDate,
+      timezone: '北京时间（UTC+8）',
+    },
     summary: {
       users: {
         total: toNumber(userSummary.total),
@@ -217,8 +238,9 @@ export async function getDashboardOverview(days) {
     rankings: { usersByTokens, projectsByTokens, usersByStorage },
     storageSync: {
       ...storageSyncState,
-      running: storageSyncState.running
-        || (storageLock?.connection_id !== null && storageLock?.connection_id !== undefined),
+      running:
+        storageSyncState.running ||
+        (storageLock?.connection_id !== null && storageLock?.connection_id !== undefined),
     },
     generatedAt: new Date(),
   };

@@ -12,7 +12,7 @@ export async function getConversationStats({ conversationId, projectId, title },
     params.push(projectId, title);
   }
   const [rows] = await connection.query(
-    `select id, project_id as projectId, title,
+    `select id, project_id as projectId, title, model, reasoning_effort as reasoningEffort,
             prompt_tokens as promptTokens,
             completion_tokens as completionTokens,
             total_tokens as totalTokens,
@@ -46,10 +46,9 @@ export async function settleConversationUsage({
     );
     if (settled.affectedRows !== 1) {
       await db.rollback();
-      const [rows] = await connection.query(
-        'select * from conversations where id = ? limit 1',
-        [conversationId],
-      );
+      const [rows] = await connection.query('select * from conversations where id = ? limit 1', [
+        conversationId,
+      ]);
       return { settled: false, conversation: rows[0] || null };
     }
 
@@ -132,10 +131,9 @@ export async function settleConversationUsage({
     );
 
     await db.commit();
-    const [rows] = await connection.query(
-      'select * from conversations where id = ? limit 1',
-      [conversationId],
-    );
+    const [rows] = await connection.query('select * from conversations where id = ? limit 1', [
+      conversationId,
+    ]);
     return { settled: true, conversation: rows[0] || null };
   } catch (error) {
     await db.rollback();

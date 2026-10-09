@@ -23,9 +23,8 @@ export class ContextCache {
     this.entries = new Map();
     this.totalBytes = 0;
 
-    this.cleanupTimer = cleanupIntervalMs > 0
-      ? setInterval(() => this.deleteExpired(), cleanupIntervalMs)
-      : null;
+    this.cleanupTimer =
+      cleanupIntervalMs > 0 ? setInterval(() => this.deleteExpired(), cleanupIntervalMs) : null;
     this.cleanupTimer?.unref?.();
   }
 
@@ -62,7 +61,11 @@ export class ContextCache {
     } catch {
       return false;
     }
-    if (!Number.isFinite(estimatedBytes) || estimatedBytes < 0 || estimatedBytes > this.maxEntryBytes) {
+    if (
+      !Number.isFinite(estimatedBytes) ||
+      estimatedBytes < 0 ||
+      estimatedBytes > this.maxEntryBytes
+    ) {
       return false;
     }
 

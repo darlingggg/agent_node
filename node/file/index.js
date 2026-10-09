@@ -1,4 +1,4 @@
-export { PROJECT_TEMP_ROOT } from './path-utils.js';
+export { PROJECT_TEMP_ROOT } from './project/path-utils.js';
 export {
   assertDeletableToolPath,
   copyDir,
@@ -11,11 +11,11 @@ export {
   getProjectTempFiles,
   updateProjectIndexHtml,
   writeFileContent,
-} from './project-files.js';
+} from './project/project-files.js';
 export {
   deletePublicAsset,
   downloadFile,
   importFilesToPublic,
   resolvePublicAssetFile,
 } from './public-assets.js';
-export { normalizePatchHunkCounts, upsertFileByPatch } from './patch.js';
+export { normalizePatchHunkCounts, upsertFileByPatch } from './project/patch.js';

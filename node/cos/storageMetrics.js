@@ -6,7 +6,16 @@ import { listObjects } from './index.js';
 export const STORAGE_METRICS_LOCK_NAME = 'gameAgent:cos-storage-metrics';
 const SYNC_INTERVAL_MS = 60 * 60 * 1000;
 const INITIAL_SYNC_DELAY_MS = 30 * 1000;
-const IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.avif', '.bmp', '.svg']);
+const IMAGE_EXTENSIONS = new Set([
+  '.png',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.webp',
+  '.avif',
+  '.bmp',
+  '.svg',
+]);
 const VIDEO_EXTENSIONS = new Set(['.mp4', '.webm', '.mov', '.avi', '.mkv', '.m4v']);
 
 let syncState = {
@@ -42,7 +51,9 @@ function getStorageKey(objectKey) {
 }
 
 async function scanAllUploads(usersByStorageKey) {
-  const stats = new Map([...usersByStorageKey.values()].map((user) => [user.storage_key, createEmptyStats(user)]));
+  const stats = new Map(
+    [...usersByStorageKey.values()].map((user) => [user.storage_key, createEmptyStats(user)]),
+  );
   let marker = '';
   let orphanFileCount = 0;
   let orphanBytes = 0;
@@ -102,22 +113,31 @@ async function persistMetrics(db, metrics) {
            sync_status = 'success',
            error_message = NULL`,
         [
-          row.userId, row.storageKey, row.fileCount, row.totalBytes,
-          row.imageCount, row.videoCount, row.otherCount, now,
-        ]
+          row.userId,
+          row.storageKey,
+          row.fileCount,
+          row.totalBytes,
+          row.imageCount,
+          row.videoCount,
+          row.otherCount,
+          now,
+        ],
       );
     }
 
     await db.query(
       `DELETE stats FROM user_storage_stats stats
        LEFT JOIN users u ON u.id = stats.user_id
-       WHERE u.id IS NULL`
+       WHERE u.id IS NULL`,
     );
 
-    const totals = metrics.stats.reduce((result, row) => ({
-      fileCount: result.fileCount + row.fileCount,
-      totalBytes: result.totalBytes + row.totalBytes,
-    }), { fileCount: 0, totalBytes: 0 });
+    const totals = metrics.stats.reduce(
+      (result, row) => ({
+        fileCount: result.fileCount + row.fileCount,
+        totalBytes: result.totalBytes + row.totalBytes,
+      }),
+      { fileCount: 0, totalBytes: 0 },
+    );
     const allFileCount = totals.fileCount + metrics.orphanFileCount;
     const allBytes = totals.totalBytes + metrics.orphanBytes;
 
@@ -132,9 +152,13 @@ async function persistMetrics(db, metrics) {
          orphan_bytes = VALUES(orphan_bytes),
          synced_at = VALUES(synced_at)`,
       [
-        getBeijingDateKey(now), allFileCount, allBytes,
-        metrics.orphanFileCount, metrics.orphanBytes, now,
-      ]
+        getBeijingDateKey(now),
+        allFileCount,
+        allBytes,
+        metrics.orphanFileCount,
+        metrics.orphanBytes,
+        now,
+      ],
     );
     await db.commit();
     return {
@@ -157,7 +181,9 @@ export async function syncStorageMetrics() {
   const db = await connection.getConnection();
   let lockAcquired = false;
   try {
-    const [[lockRow]] = await db.query('SELECT GET_LOCK(?, 0) AS acquired', [STORAGE_METRICS_LOCK_NAME]);
+    const [[lockRow]] = await db.query('SELECT GET_LOCK(?, 0) AS acquired', [
+      STORAGE_METRICS_LOCK_NAME,
+    ]);
     lockAcquired = Number(lockRow?.acquired) === 1;
     if (!lockAcquired) return { skipped: true, reason: '已有同步任务正在运行' };
 
@@ -170,7 +196,7 @@ export async function syncStorageMetrics() {
       await db.query(
         `UPDATE user_storage_stats
          SET sync_status = 'error', error_message = ?`,
-        [String(error.message || error).slice(0, 500)]
+        [String(error.message || error).slice(0, 500)],
       );
     } catch {
       // 数据表尚未迁移时只保留原始错误，避免掩盖真正原因。
@@ -222,7 +248,10 @@ export function requestStorageMetricsSync(source = 'manual') {
 }
 
 export function startStorageMetricsScheduler() {
-  const initialTimer = setTimeout(() => requestStorageMetricsSync('startup'), INITIAL_SYNC_DELAY_MS);
+  const initialTimer = setTimeout(
+    () => requestStorageMetricsSync('startup'),
+    INITIAL_SYNC_DELAY_MS,
+  );
   initialTimer.unref?.();
   const interval = setInterval(() => requestStorageMetricsSync('scheduler'), SYNC_INTERVAL_MS);
   interval.unref?.();

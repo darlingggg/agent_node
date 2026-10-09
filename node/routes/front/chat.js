@@ -1,6 +1,6 @@
 import express from 'express';
 import authJWT from '../../middleware/authJWT.js';
-import { getProjectInfo } from '../../project/index.js';
+import { getProjectInfo } from '../../project.js';
 import {
   createStreamingAssistantSession,
   createUserChatSession,
@@ -13,9 +13,11 @@ import {
   runAiChat,
   startChatStream,
   subscribeChatStream,
-} from '../../chatStream/index.js';
+} from '../../chatStream.js';
 import { markUserActive } from '../../utils/activity.js';
 import { contextCache } from './context.js';
+import { selectChatModel } from '../../models/service.js';
+import { saveConversationModel } from '../../session/conversations.js';
 import { prepareSse, writeSse } from './sse.js';
 
 const router = express.Router();
@@ -63,13 +65,15 @@ function formatUsageSettlement(result, usage, status) {
       estimated: Boolean(usage?.estimated),
       compressed: Boolean(usage?.compressed),
     },
-    conversation: stats ? {
-      promptTokens: Number(stats.prompt_tokens) || 0,
-      completionTokens: Number(stats.completion_tokens) || 0,
-      totalTokens: Number(stats.total_tokens) || 0,
-      currentContextTokens: Number(stats.current_context_tokens) || 0,
-      contextLimit: Number(stats.context_limit) || 0,
-    } : null,
+    conversation: stats
+      ? {
+          promptTokens: Number(stats.prompt_tokens) || 0,
+          completionTokens: Number(stats.completion_tokens) || 0,
+          totalTokens: Number(stats.total_tokens) || 0,
+          currentContextTokens: Number(stats.current_context_tokens) || 0,
+          contextLimit: Number(stats.context_limit) || 0,
+        }
+      : null,
   };
 }
 
@@ -82,11 +86,16 @@ router.post('/chat/stream', authJWT, async (req, res) => {
   try {
     const project = await getProjectInfo(projectId, req.user);
     await markUserActive(req.user.id);
-    const conversation = await getOrCreateConversation({
-      projectId,
-      title: title || prompt.slice(0, 30),
-      conversationId,
-    }, req.user);
+    const conversation = await getOrCreateConversation(
+      {
+        projectId,
+        title: title || prompt.slice(0, 30),
+        conversationId,
+      },
+      req.user,
+    );
+    const modelConfig = await selectChatModel(req.body, conversation);
+    await saveConversationModel(conversation.id, modelConfig, req.user);
     const contextKey = String(conversation.id);
     const cachedHistory = conversation.title ? contextCache.get(contextKey) : undefined;
 
@@ -105,17 +114,25 @@ router.post('/chat/stream', authJWT, async (req, res) => {
       context = context.concat(cachedHistory);
     }
 
-    const userSession = await createUserChatSession({
-      title: conversation.title,
-      projectId,
-      content: prompt,
-      conversationId: conversation.id,
-    }, req.user);
-    const assistantSession = await createStreamingAssistantSession({
-      title: conversation.title,
-      projectId,
-      conversationId: conversation.id,
-    }, req.user);
+    const userSession = await createUserChatSession(
+      {
+        title: conversation.title,
+        projectId,
+        content: prompt,
+        conversationId: conversation.id,
+        ...modelConfig,
+      },
+      req.user,
+    );
+    const assistantSession = await createStreamingAssistantSession(
+      {
+        title: conversation.title,
+        projectId,
+        conversationId: conversation.id,
+        ...modelConfig,
+      },
+      req.user,
+    );
 
     prepareSse(res);
     writeSse(res, {
@@ -125,31 +142,35 @@ router.post('/chat/stream', authJWT, async (req, res) => {
         assistantSessionId: assistantSession.sessionId,
         assistantMessageId: assistantSession.messageId,
         conversationId: conversation.id,
+        model: modelConfig.model,
+        reasoningEffort: modelConfig.reasoningEffort,
       },
     });
 
     startChatStream({
       messageId: assistantSession.messageId,
       sessionId: assistantSession.sessionId,
-      run: (send, signal) => runAiChat(
-        buildProjectMessage(prompt, project),
-        send,
-        context,
-        project.dir_path,
-        imageUrls,
-        prompt,
-        {
-          signal,
-          userSessionId: userSession.id,
-          assistantSessionId: assistantSession.sessionId,
-          toolContext: {
-            account: req.user.account,
-            storageKey: req.user.storage_key,
-            projectId: Number(projectId),
-            conversationId: conversation.id,
+      run: (send, signal) =>
+        runAiChat(
+          buildProjectMessage(prompt, project),
+          send,
+          context,
+          project.dir_path,
+          imageUrls,
+          prompt,
+          {
+            modelConfig,
+            signal,
+            userSessionId: userSession.id,
+            assistantSessionId: assistantSession.sessionId,
+            toolContext: {
+              account: req.user.account,
+              storageKey: req.user.storage_key,
+              projectId: Number(projectId),
+              conversationId: conversation.id,
+            },
           },
-        },
-      ),
+        ),
       onSettled: async (usage, status) => {
         const result = await settleConversationUsage({
           conversationId: conversation.id,

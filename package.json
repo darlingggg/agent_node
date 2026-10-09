@@ -6,7 +6,9 @@
   "scripts": {
     "start": "PORT=5000 node node/index.js",
     "dev": "nodemon --watch node --watch file --watch Mysql node/index.js",
-    "test": "node --test"
+    "test": "node --test --test-concurrency=1",
+    "db:migrate:models": "node Mysql/migrate-ai-models.js",
+    "models:sync": "node node/models/sync.js"
   },
   "keywords": [],
   "author": "",

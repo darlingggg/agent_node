@@ -10,18 +10,17 @@ export async function createSession(body, user) {
   const { role, projectId, content } = body;
   const title = body.title || content.slice(0, 30);
   const account = user.account;
-  const [projects] = await connection.query(
-    'select * from projects where id = ? and account = ?',
-    [projectId, account],
-  );
+  const [projects] = await connection.query('select * from projects where id = ? and account = ?', [
+    projectId,
+    account,
+  ]);
   if (projects.length === 0) throw new Error('项目不存在');
   const conversation = await getOrCreateConversation({ projectId, title }, user);
 
   if (role === 'assistant' || role === 'vision') {
-    const [messageResult] = await connection.query(
-      'insert into messages (content) values (?)',
-      [content],
-    );
+    const [messageResult] = await connection.query('insert into messages (content) values (?)', [
+      content,
+    ]);
     const [sessionResult] = await connection.query(
       'insert into sessions (title, role, project_id, message_id,account,conversation_id) VALUES (?, ?, ?, ?, ?, ?)',
       [title, role, projectId, messageResult.insertId, account, conversation.id],
@@ -36,9 +35,12 @@ export async function createSession(body, user) {
   return { id: sessionResult.insertId, content: '创建成功' };
 }
 
-export async function createUserChatSession({ title, projectId, content, conversationId }, user) {
+export async function createUserChatSession(
+  { title, projectId, content, conversationId, model, reasoningEffort },
+  user,
+) {
   const [result] = await connection.query(
-    'insert into sessions (title, role, project_id, content, account, status, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
+    'insert into sessions (title, role, project_id, content, account, status, conversation_id, model, reasoning_effort) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
       title || content.slice(0, 30),
       'user',
@@ -47,29 +49,39 @@ export async function createUserChatSession({ title, projectId, content, convers
       user.account,
       'completed',
       conversationId,
+      model,
+      reasoningEffort,
     ],
   );
   return { id: result.insertId };
 }
 
-export async function createStreamingAssistantSession({ title, projectId, conversationId }, user) {
-  const [messageResult] = await connection.query(
-    'insert into messages (content) values (?)',
-    [''],
-  );
+export async function createStreamingAssistantSession(
+  { title, projectId, conversationId, model, reasoningEffort },
+  user,
+) {
+  const [messageResult] = await connection.query('insert into messages (content) values (?)', ['']);
   const messageId = messageResult.insertId;
   const [sessionResult] = await connection.query(
-    'insert into sessions (title, role, project_id, message_id, account, status, conversation_id) VALUES (?, ?, ?, ?, ?, ?, ?)',
-    [title, 'assistant', projectId, messageId, user.account, 'streaming', conversationId],
+    'insert into sessions (title, role, project_id, message_id, account, status, conversation_id, model, reasoning_effort) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    [
+      title,
+      'assistant',
+      projectId,
+      messageId,
+      user.account,
+      'streaming',
+      conversationId,
+      model,
+      reasoningEffort,
+    ],
   );
   return { sessionId: sessionResult.insertId, messageId };
 }
 
 export async function getSessionList(projectId, title = undefined, user) {
   const where = title ? 'and s.title = ?' : '';
-  const params = title
-    ? [projectId, title, user.account]
-    : [projectId, user.account];
+  const params = title ? [projectId, title, user.account] : [projectId, user.account];
   const [result] = await connection.query(
     `select s.*, coalesce(m.content, s.content, '') as content
        from sessions s

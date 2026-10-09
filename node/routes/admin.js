@@ -1,4 +1,5 @@
 import express from 'express';
+import modelsRouter from './admin/models.js';
 import authJWT from '../middleware/authJWT.js';
 import { requireAdmin } from '../middleware/adminAuth.js';
 import projectsRouter from './admin/projects.js';
@@ -15,6 +16,7 @@ import imageGenerationsRouter from './admin/imageGenerations.js';
 const router = express.Router();
 
 router.use(authJWT, requireAdmin);
+router.use('/models', modelsRouter);
 router.use('/projects', projectsRouter);
 router.use('/users', usersRouter);
 router.use('/assets', assetsRouter);

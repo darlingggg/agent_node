@@ -8,8 +8,8 @@ import {
   getLatestTemplateVersion,
   getProjectInfo,
   updateProjectTemplateVersion,
-} from '../../project/index.js';
-import { addSnapshot, getCurrentVision } from '../../snapshot/index.js';
+} from '../../project.js';
+import { addSnapshot, getCurrentVision } from '../../snapshot.js';
 import { markUserActive } from '../../utils/activity.js';
 import { prepareSse, writeSse } from './sse.js';
 

@@ -6,7 +6,7 @@ import {
   getProjectInfo,
   getProjectList,
   updateProject,
-} from '../../project/index.js';
+} from '../../project.js';
 import { markUserActive } from '../../utils/activity.js';
 
 const router = express.Router();

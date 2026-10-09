@@ -1,4 +1,5 @@
 import express from 'express';
+import modelsRouter from './front/models.js';
 import systemRouter from './front/system.js';
 import authRouter from './front/auth.js';
 import fileRouter from './front/files.js';
@@ -12,6 +13,7 @@ import deploymentRouter from './front/deployment.js';
 const router = express.Router();
 
 router.use(
+  modelsRouter,
   systemRouter,
   authRouter,
   fileRouter,

@@ -42,7 +42,11 @@ router.get('/conversation/list', authJWT, async (req, res) => {
   const { projectId, keyword, page, pageSize } = req.query;
   if (!projectId) return res.cc(1, '项目id不能为空');
   try {
-    res.cc(0, '获取成功', await getConversationList({ projectId, keyword, page, pageSize }, req.user));
+    res.cc(
+      0,
+      '获取成功',
+      await getConversationList({ projectId, keyword, page, pageSize }, req.user),
+    );
   } catch (error) {
     res.cc(1, error.message);
   }
@@ -51,11 +55,14 @@ router.get('/conversation/list', authJWT, async (req, res) => {
 router.get('/conversation/:conversationId/messages', authJWT, async (req, res) => {
   if (!isNumericId(req.params.conversationId)) return res.cc(1, 'conversationId格式不正确');
   try {
-    const result = await getConversationMessages({
-      conversationId: req.params.conversationId,
-      beforeId: req.query.beforeId,
-      limit: req.query.limit,
-    }, req.user);
+    const result = await getConversationMessages(
+      {
+        conversationId: req.params.conversationId,
+        beforeId: req.query.beforeId,
+        limit: req.query.limit,
+      },
+      req.user,
+    );
     res.cc(0, '获取成功', result);
   } catch (error) {
     res.cc(1, error.message);
@@ -66,10 +73,13 @@ router.patch('/conversation/:conversationId', authJWT, async (req, res) => {
   if (!isNumericId(req.params.conversationId)) return res.cc(1, 'conversationId格式不正确');
   if (!req.body.title?.trim()) return res.cc(1, '新标题不能为空');
   try {
-    const result = await updateConversation({
-      conversationId: req.params.conversationId,
-      title: req.body.title,
-    }, req.user);
+    const result = await updateConversation(
+      {
+        conversationId: req.params.conversationId,
+        title: req.body.title,
+      },
+      req.user,
+    );
     res.cc(0, '修改成功', result);
   } catch (error) {
     res.cc(1, error.message);
@@ -125,7 +135,11 @@ router.get('/conversation/stats', authJWT, async (req, res) => {
     return res.cc(1, 'conversationId 或 projectId + title 不能为空');
   }
   try {
-    res.cc(0, '获取成功', await getConversationStats({ conversationId, projectId, title }, req.user));
+    res.cc(
+      0,
+      '获取成功',
+      await getConversationStats({ conversationId, projectId, title }, req.user),
+    );
   } catch (error) {
     res.cc(1, error.message);
   }
