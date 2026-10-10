@@ -23,6 +23,7 @@ import {
   subscribeChatStream,
 } from '../node/chatStream.js';
 import {
+  recoverPendingImageGenerationTasks,
   subscribeImageGenerationTask,
   waitForStoredImageGenerationTask,
 } from '../node/imageGeneration.js';
@@ -236,8 +237,9 @@ test(
         .replace('CREATE TABLE', 'CREATE TEMPORARY TABLE');
       await db.query(sql);
       await db.query(sql);
+      const [[imageSchema]] = await db.query('SHOW CREATE TABLE ai_generated_images');
       await db.query(
-        'CREATE TEMPORARY TABLE ai_generated_images (id INT, account VARCHAR(50), assistant_session_id INT, status VARCHAR(20))',
+        imageSchema['Create Table'].replace('CREATE TABLE', 'CREATE TEMPORARY TABLE'),
       );
       await db.query(
         "INSERT INTO users (id,account,password,nickname,role,storage_key) VALUES (9998001,'tool-owner','test','测试用户','normal','tool-owner'),(9998002,'tool-other','test','其他用户','normal','tool-other')",
@@ -396,6 +398,68 @@ test(
         (await store.list(9998002, 'tool-owner')).tools[0].status,
         'succeeded',
       );
+      await db.query("INSERT INTO messages(id,content) VALUES(9998004,'')");
+      await db.query(
+        "INSERT INTO sessions(id,message_id,project_id,conversation_id,account,title,role,status) VALUES(9998004,9998004,9998001,9998001,'tool-owner','工具测试','assistant','streaming')",
+      );
+      let completeDisconnectedTool;
+      const disconnectedToolGate = new Promise((resolve) => {
+        completeDisconnectedTool = resolve;
+      });
+      let executionCount = 0;
+      const disconnected = startChatStream({
+        messageId: 9998004,
+        sessionId: 9998004,
+        run: async (send) => {
+          executionCount += 1;
+          send({ event: 'text', data: '正在读取。' });
+          send({ event: 'tool_start', data: { ...base, toolCallId: 'reconnect-call' } });
+          await disconnectedToolGate;
+          send({
+            event: 'tool_end',
+            data: {
+              toolCallId: 'reconnect-call',
+              name: base.name,
+              status: 'succeeded',
+              result: { success: true, data: '读取完成' },
+              finishedAt: new Date().toISOString(),
+            },
+          });
+          return {};
+        },
+      });
+      await new Promise((resolve) => setImmediate(resolve));
+      const streamUrl = `http://127.0.0.1:${server.address().port}/chat/messages/9998004/stream`;
+      const streamHeaders = {
+        Authorization: `Bearer ${jwt.sign({ id: 9998001 }, process.env.JWT_SECRET || 'agentNode_dev_secret')}`,
+      };
+      const firstController = new AbortController();
+      const firstStream = await fetch(streamUrl, { headers: streamHeaders, signal: firstController.signal });
+      assert.equal(firstStream.status, 200);
+      const firstChunk = await firstStream.body.getReader().read();
+      assert.match(new TextDecoder().decode(firstChunk.value), /tool_snapshot/);
+      firstController.abort();
+      await disconnected.toolPersistence;
+      assert.equal((await store.list(9998004, 'tool-owner')).tools[0].status, 'running');
+      const reconnectedStream = await fetch(`${streamUrl}?offset=${'正在读取。'.length}`, { headers: streamHeaders });
+      const reconnectedReader = reconnectedStream.body.getReader();
+      const reconnectChunk = await reconnectedReader.read();
+      const reconnectSnapshot = new TextDecoder().decode(reconnectChunk.value);
+      assert.match(reconnectSnapshot, /reconnect-call/);
+      assert.doesNotMatch(reconnectSnapshot, /"event":"text"/);
+      completeDisconnectedTool();
+      let remaining = '';
+      for (;;) {
+        const { done, value } = await reconnectedReader.read();
+        if (done) break;
+        remaining += new TextDecoder().decode(value);
+      }
+      assert.match(remaining, /"event":"tool_end"/);
+      assert.match(remaining, /"event":"done"/);
+      await disconnected.completion;
+      assert.equal(executionCount, 1);
+      assert.equal((await store.list(9998004, 'tool-owner')).tools.length, 1);
+      assert.equal((await store.list(9998004, 'tool-owner')).tools[0].status, 'succeeded');
       await db.query("INSERT INTO messages(id,content) VALUES(9998003,'')");
       await db.query(
         "INSERT INTO sessions(id,message_id,project_id,conversation_id,account,title,role,status) VALUES(9998003,9998003,9998001,9998001,'tool-owner','工具测试','assistant','streaming')",
@@ -425,7 +489,7 @@ test(
         'cancelled',
       );
       await db.query(
-        "INSERT INTO ai_generated_images(id,account,assistant_session_id,status) VALUES(9998001,'tool-owner',9998001,'queued')",
+        "INSERT INTO ai_generated_images(id,account,assistant_session_id,model,prompt,status) VALUES(9998001,'tool-owner',9998001,'test','只读观察','queued')",
       );
       const imageEvents = [];
       const imageResponse = {
@@ -449,6 +513,31 @@ test(
         'SELECT status FROM ai_generated_images WHERE id=9998001',
       );
       assert.equal(imageRow.status, 'queued');
+      await db.query("UPDATE ai_generated_images SET status='failed' WHERE id=9998001");
+      await db.query(
+        "INSERT INTO ai_generated_images(id,account,model,prompt,status,temporary_url) VALUES(9998002,'tool-owner','test','保存阶段恢复','storing','http://local.test/image.png')",
+      );
+      let uploadCount = 0;
+      const recovered = await recoverPendingImageGenerationTasks({
+        upload: async (url, storageKey) => {
+          assert.equal(url, 'http://local.test/image.png');
+          assert.equal(storageKey, 'tool-owner');
+          uploadCount += 1;
+          return {
+            key: 'acceptance/image.webp', url: 'http://local.test/image.webp',
+            contentType: 'image/webp', originalSize: 120, size: 90,
+            width: 16, height: 16,
+          };
+        },
+      });
+      assert.equal(recovered.length, 1);
+      await recovered[0].promise;
+      const [[storedImage]] = await db.query(
+        'SELECT status,object_key,stored_size FROM ai_generated_images WHERE id=9998002',
+      );
+      assert.deepEqual([storedImage.status, storedImage.object_key, Number(storedImage.stored_size)],
+        ['succeeded', 'acceptance/image.webp', 90]);
+      assert.equal(uploadCount, 1);
     } finally {
       if (server) await new Promise((resolve) => server.close(resolve));
       connection.query = originalQuery;

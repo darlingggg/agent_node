@@ -10,6 +10,7 @@ import { keysToCamelCase } from './utils/case.js';
 
 const activeImageTasks = new Map();
 const TERMINAL_STATUSES = new Set(['succeeded', 'failed']);
+const INTERRUPTED_TOOL_ERROR = '服务重启中断工具调用';
 const HEARTBEAT_INTERVAL_MS = 15 * 1000;
 
 const writeSse = (res, message) => {
@@ -72,6 +73,30 @@ const toPublicTask = async (row, signedUrl = null) => {
   return task;
 };
 
+async function reconcileInterruptedImageTool(job, publicTask) {
+  if (!job.assistant_session_id || !job.tool_call_id || !TERMINAL_STATUSES.has(job.status)) return;
+  const succeeded = job.status === 'succeeded';
+  const result = succeeded
+    ? {
+        success: true,
+        message: '图片已生成并保存到 COS',
+        data: {
+          taskId: Number(job.id), status: job.status, url: publicTask.url,
+          width: job.width, height: job.height, contentType: job.content_type,
+          storedSize: job.stored_size,
+        },
+      }
+    : { success: false, message: `图片生成失败: ${job.error_message || '未知错误'}`, data: null };
+  await connection.query(
+    `UPDATE message_tool_calls SET status = ?, result_json = ?, error_text = ?
+     WHERE assistant_session_id = ? AND tool_call_id = ? AND name = 'generate_image'
+       AND status = 'failed' AND error_text = ?`,
+    [job.status === 'succeeded' ? 'succeeded' : 'failed', JSON.stringify(result),
+      succeeded ? null : result.message, job.assistant_session_id, job.tool_call_id,
+      INTERRUPTED_TOOL_ERROR],
+  );
+}
+
 export const getImageGenerationTask = async (taskId, account) => {
   const [rows] = await connection.query(
     'select * from ai_generated_images where id = ? and account = ? limit 1',
@@ -109,7 +134,7 @@ const publishStatus = (state, status, extra = {}) => {
  * 在后台执行或恢复图片任务。浏览器断开不会取消该 Promise。
  * 如果已有 external_task_id，则继续轮询原服务商任务。
  */
-export const startImageGenerationTask = (job, storageKey = null) => {
+export const startImageGenerationTask = (job, storageKey = null, { upload = uploadGeneratedImageToCos } = {}) => {
   const id = Number(job.id);
   if (activeImageTasks.has(id) || TERMINAL_STATUSES.has(job.status)) {
     return activeImageTasks.get(id) || null;
@@ -169,7 +194,7 @@ export const startImageGenerationTask = (job, storageKey = null) => {
       );
 
       const targetStorageKey = storageKey || (await getUserStorageKey(job.account));
-      const stored = await uploadGeneratedImageToCos(temporaryUrl, targetStorageKey);
+      const stored = await upload(temporaryUrl, targetStorageKey);
       await connection.query(
         `update ai_generated_images
          set status = 'succeeded', object_key = ?, content_type = ?,
@@ -188,7 +213,11 @@ export const startImageGenerationTask = (job, storageKey = null) => {
       );
       state.status = 'succeeded';
       const completed = await getImageGenerationTask(id, job.account);
-      broadcast(state, { event: 'stored', data: await toPublicTask(completed, stored.url) });
+      const publicTask = await toPublicTask(completed, stored.url);
+      await reconcileInterruptedImageTool(completed, publicTask).catch((error) => {
+        console.error('[image-generation] 对账生图工具结果失败:', error);
+      });
+      broadcast(state, { event: 'stored', data: publicTask });
       broadcast(state, { event: 'done', data: { taskId: id } });
     })
     .catch(async (error) => {
@@ -204,6 +233,14 @@ export const startImageGenerationTask = (job, storageKey = null) => {
         .catch((updateError) => {
           console.error('[image-generation] 更新失败状态时出错:', updateError);
         });
+      const failed = await getImageGenerationTask(id, job.account).catch(() => null);
+      if (failed) {
+        try {
+          await reconcileInterruptedImageTool(failed, await toPublicTask(failed));
+        } catch (reconcileError) {
+          console.error('[image-generation] 对账生图工具失败状态时出错:', reconcileError);
+        }
+      }
       broadcast(state, { event: 'error', data: { taskId: id, message } });
     })
     .finally(() => {
@@ -213,6 +250,33 @@ export const startImageGenerationTask = (job, storageKey = null) => {
 
   return state;
 };
+
+/** 进程重启后恢复数据库中尚未结束的任务，避免历史只读订阅触发重跑。 */
+export async function recoverPendingImageGenerationTasks({ upload = uploadGeneratedImageToCos } = {}) {
+  let interrupted = [];
+  try {
+    [interrupted] = await connection.query(
+      `SELECT assistant_session_id, tool_call_id FROM message_tool_calls
+       WHERE name = 'generate_image' AND status = 'failed' AND error_text = ?`,
+      [INTERRUPTED_TOOL_ERROR],
+    );
+  } catch (error) {
+    if (error.code !== 'ER_NO_SUCH_TABLE') throw error;
+  }
+  for (const tool of interrupted) {
+    const [[job]] = await connection.query(
+      'SELECT * FROM ai_generated_images WHERE assistant_session_id = ? AND tool_call_id = ? LIMIT 1',
+      [tool.assistant_session_id, tool.tool_call_id],
+    );
+    if (job && TERMINAL_STATUSES.has(job.status)) {
+      await reconcileInterruptedImageTool(job, await toPublicTask(job));
+    }
+  }
+  const [jobs] = await connection.query(
+    "SELECT * FROM ai_generated_images WHERE status IN ('queued', 'submitted', 'generating', 'storing')",
+  );
+  return jobs.map((job) => startImageGenerationTask(job, null, { upload }));
+}
 
 /** 创建数据库任务并立即在后台启动，调用方不需要等待图片完成。 */
 export const createImageGenerationTask = async ({

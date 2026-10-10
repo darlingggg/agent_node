@@ -88,6 +88,32 @@ const scheduleFlush = (state) => {
 /** 获取当前进程内正在生成的流状态；仅用于调试或内部判断。 */
 export const getActiveStream = (messageId) => activeStreams.get(Number(messageId));
 
+/** 单进程服务重启后，旧进程的聊天流已不可继续，收束遗留状态。 */
+export async function recoverOrphanedChatStreams() {
+  const db = await connection.getConnection();
+  try {
+    await db.beginTransaction();
+    const [tools] = await db.query(
+      `UPDATE message_tool_calls t JOIN sessions s ON s.message_id = t.message_id
+       SET t.status = 'failed', t.error_text = COALESCE(t.error_text, '服务重启中断工具调用'),
+           t.finished_at = COALESCE(t.finished_at, NOW(3)),
+           t.duration_ms = COALESCE(t.duration_ms, TIMESTAMPDIFF(MICROSECOND, t.started_at, NOW(3)) DIV 1000)
+       WHERE s.status = 'streaming' AND s.role = 'assistant' AND t.status = 'running'`,
+    );
+    const [sessions] = await db.query(
+      `UPDATE sessions SET status = 'failed', error_msg = '服务重启中断回复，已保存的内容仍可查看'
+       WHERE role = 'assistant' AND status = 'streaming'`,
+    );
+    await db.commit();
+    return { sessions: sessions.affectedRows, tools: tools.affectedRows };
+  } catch (error) {
+    await db.rollback();
+    throw error;
+  } finally {
+    db.release();
+  }
+}
+
 /** 查询 messageId 对应的会话，并校验它属于当前账号。 */
 export const getMessageSession = async (messageId, account) => {
   const [rows] = await connection.query(

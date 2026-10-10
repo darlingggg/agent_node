@@ -11,9 +11,7 @@ import { addSnapshot } from './snapshot.js';
 import connection from '../Mysql/index.js';
 import fs from 'fs/promises';
 import path from 'path';
-const rootDir = '/www/wwwroot/ai_agent';
-// const rootDir = 'C:/pro_self';
-// const rootDir = 'C:/ai';
+const rootDir = process.env.PROJECT_ROOT_DIR || (process.platform === 'win32' ? 'C:/ai' : '/www/wwwroot/ai_agent');
 
 /** 项目类型对应的模板目录相对路径 */
 const typeToPath = {

@@ -5,8 +5,10 @@ import frontRouter from './routes/front.js';
 import adminRouter from './routes/admin.js';
 import { startStorageMetricsScheduler } from './cos/storageMetrics.js';
 import { startModelSyncScheduler } from './models/scheduler.js';
+import { recoverPendingImageGenerationTasks } from './imageGeneration.js';
+import { recoverOrphanedChatStreams } from './chatStream.js';
 
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 5000;
 const app = express();
 
 const allowOrigin = ['http://localhost:5173', 'https://darling.xin', 'https://www.darling.xin'];
@@ -28,6 +30,17 @@ app.use(resCC);
 // 前台接口保持原路径；后台接口统一使用 /admin 前缀。
 app.use(frontRouter);
 app.use('/admin', adminRouter);
+
+try {
+  await recoverOrphanedChatStreams();
+} catch (error) {
+  console.error('[startup] 收束失联聊天流失败:', error);
+}
+try {
+  await recoverPendingImageGenerationTasks();
+} catch (error) {
+  console.error('[startup] 恢复未完成图片任务失败:', error);
+}
 
 app.listen(PORT, () => {
   console.log(`Express 服务已启动: http://localhost:${PORT}`);
