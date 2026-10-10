@@ -12,6 +12,7 @@ import {
   cancelChatStream,
   runAiChat,
   startChatStream,
+  getActiveStream,
   subscribeChatStream,
 } from '../../chatStream.js';
 import { markUserActive } from '../../utils/activity.js';
@@ -19,6 +20,8 @@ import { contextCache } from './context.js';
 import { selectChatModel } from '../../models/service.js';
 import { saveConversationModel } from '../../session/conversations.js';
 import { prepareSse, writeSse } from './sse.js';
+import { toolCallStore, summarizeTools } from '../../toolCalls.js';
+import { listImageGenerationTasks } from '../../imageGeneration.js';
 
 const router = express.Router();
 
@@ -194,6 +197,7 @@ router.post('/chat/stream', authJWT, async (req, res) => {
       account: req.user.account,
       offset: 0,
       res,
+      initialSession: { account: req.user.account, status: 'streaming' },
     });
   } catch (error) {
     if (res.headersSent) {
@@ -202,6 +206,31 @@ router.post('/chat/stream', authJWT, async (req, res) => {
     }
     res.cc(1, error.message);
   }
+});
+
+router.get('/chat/messages/:messageId/tools', authJWT, async (req, res) => {
+  try {
+    const active = getActiveStream(req.params.messageId);
+    if (active) await active.toolPersistence;
+    const { tools, sessionId } = await toolCallStore.list(req.params.messageId, req.user.account);
+    if (!active) for (const tool of tools) {
+      if (tool.status !== 'running') continue;
+      tool.status = 'failed';
+      tool.error = '生成任务已结束或连接已中断，未收到完整结果';
+    }
+    let page = 1;
+    let hasMore;
+    do {
+      const result = await listImageGenerationTasks({ account: req.user.account, assistantSessionId: sessionId, page, pageSize: 50 });
+      for (const task of result.list) {
+        const tool = tools.find((item) => item.toolCallId === task.toolCallId);
+        if (tool) (tool.imageTasks ??= []).push(task);
+      }
+      hasMore = result.pagination.hasMore;
+      page += 1;
+    } while (hasMore);
+    res.cc(0, '工具过程', { tools, summary: summarizeTools(tools) });
+  } catch (error) { res.cc(1, error.message); }
 });
 
 router.post('/chat/messages/:messageId/cancel', authJWT, async (req, res) => {

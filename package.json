@@ -8,6 +8,7 @@
     "dev": "nodemon --watch node --watch file --watch Mysql node/index.js",
     "test": "node --test --test-concurrency=1",
     "db:migrate:models": "node Mysql/migrate-ai-models.js",
+    "db:migrate:tools": "node Mysql/migrate-tool-calls.js",
     "models:sync": "node node/models/sync.js"
   },
   "keywords": [],

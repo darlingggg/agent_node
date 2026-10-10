@@ -257,13 +257,23 @@ export const createImageGenerationTask = async ({
 };
 
 /** 等待任务完成；只有图片已成功保存到 COS 时才返回。 */
-export const waitForStoredImageGenerationTask = async ({ taskId, account, storageKey }) => {
+export const waitForStoredImageGenerationTask = async ({ taskId, account, storageKey, signal }) => {
+  if (signal?.aborted) throw new DOMException('执行已停止', 'AbortError');
   let job = await getImageGenerationTask(taskId, account);
   if (!job) throw new Error('图片生成任务不存在');
 
   if (!TERMINAL_STATUSES.has(job.status)) {
     const state = activeImageTasks.get(Number(taskId)) || startImageGenerationTask(job, storageKey);
-    await state?.promise;
+    if (signal) {
+      let abort;
+      try {
+        await Promise.race([state?.promise, new Promise((_, reject) => {
+          abort = () => reject(new DOMException('执行已停止', 'AbortError'));
+          signal.addEventListener('abort', abort, { once: true });
+          if (signal.aborted) abort();
+        })]);
+      } finally { if (abort) signal.removeEventListener('abort', abort); }
+    } else await state?.promise;
     job = await getImageGenerationTask(taskId, account);
   }
 
@@ -328,7 +338,7 @@ export const getPublicImageGenerationTask = async (taskId, account) => {
 };
 
 /** SSE 重连：先发送完整快照，再挂接当前进程内的后续事件。 */
-export const subscribeImageGenerationTask = async ({ taskId, account, storageKey, res }) => {
+export const subscribeImageGenerationTask = async ({ taskId, account, storageKey, res, observeOnly = false }) => {
   let job = await getImageGenerationTask(taskId, account);
   if (!job) {
     writeSse(res, { event: 'error', data: { taskId, message: '图片生成任务不存在' } });
@@ -337,7 +347,7 @@ export const subscribeImageGenerationTask = async ({ taskId, account, storageKey
   }
 
   let state = activeImageTasks.get(Number(taskId));
-  if (!TERMINAL_STATUSES.has(job.status) && !state) {
+  if (!TERMINAL_STATUSES.has(job.status) && !state && !observeOnly) {
     state = startImageGenerationTask(job, storageKey);
   }
 
@@ -388,5 +398,9 @@ export const subscribeImageGenerationTask = async ({ taskId, account, storageKey
     }
     res.end();
     return;
+  }
+  if (!state && observeOnly) {
+    writeSse(res, { event: 'observation_error', data: { taskId: Number(taskId), message: '图片任务暂未在运行，可在图像面板查看状态' } });
+    res.end();
   }
 };

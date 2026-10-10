@@ -1,5 +1,6 @@
 import connection from '../Mysql/index.js';
 import { chat } from './openai/index.js';
+import { toolCallStore, summarizeTools } from './toolCalls.js';
 
 const FLUSH_INTERVAL_MS = 500;
 const FLUSH_CHARS = 800;
@@ -132,11 +133,25 @@ export const startChatStream = ({ messageId, sessionId, run, onComplete, onSettl
     lastFlushedAt: Date.now(),
     abortController: new AbortController(),
     cancelRequested: false,
+    tools: new Map(),
+    toolPersistence: Promise.resolve(),
   };
   activeStreams.set(id, state);
 
   // 统一处理 AI 输出：文本事件负责追加内容并触发落库，所有事件都会转发给客户端。
   const onEvent = (msg) => {
+    if (['tool_start', 'tool_end', 'tool_error'].includes(msg?.event) && msg.data && typeof msg.data === 'object') {
+      const data = msg.data;
+      const previous = state.tools.get(data.toolCallId);
+      const tool = { sequence: state.tools.size + 1, textOffset: state.content.length,
+        startedAt: new Date().toISOString(), args: {}, ...previous, ...data };
+      state.tools.set(tool.toolCallId, tool);
+      const snapshot = { ...tool };
+      state.toolPersistence = state.toolPersistence.then(() => toolCallStore.save(id, snapshot)).catch((error) => {
+        console.error('[chat-stream] tool history persistence failed:', error.message);
+      });
+      msg = { ...msg, data: tool };
+    }
     if (msg?.event === 'text' && typeof msg.data === 'string') {
       state.content += msg.data;
       state.dirty = true;
@@ -147,10 +162,11 @@ export const startChatStream = ({ messageId, sessionId, run, onComplete, onSettl
   };
 
   // 后台执行 AI 生成，不阻塞接口返回；结束时更新会话状态并通知所有订阅者。
-  Promise.resolve()
+  state.completion = Promise.resolve()
     .then(() => run(onEvent, state.abortController.signal))
     .then(async (runResult) => {
       state.status = 'completed';
+      await state.toolPersistence;
       if (state.flushTimer) clearTimeout(state.flushTimer);
       state.flushTimer = null;
       await flushMessage(state, true);
@@ -178,6 +194,15 @@ export const startChatStream = ({ messageId, sessionId, run, onComplete, onSettl
     .catch(async (err) => {
       state.status = state.cancelRequested || err?.name === 'AbortError' ? 'cancelled' : 'failed';
       state.error = err?.message || String(err);
+      for (const tool of state.tools.values()) {
+        if (tool.status !== 'running') continue;
+        tool.status = state.status === 'cancelled' ? 'cancelled' : 'failed';
+        tool.error = state.status === 'failed' ? state.error : '执行已停止';
+        tool.finishedAt = new Date().toISOString();
+        tool.durationMs = Date.now() - new Date(tool.startedAt).getTime();
+        onEvent({ event: 'tool_end', data: { ...tool } });
+      }
+      await state.toolPersistence;
       if (state.flushTimer) clearTimeout(state.flushTimer);
       state.flushTimer = null;
       await flushMessage(state, true).catch((flushErr) => {
@@ -233,10 +258,11 @@ export const cancelChatStream = async ({ messageId, account }) => {
  * 订阅某条 assistant 消息的 SSE 流。
  * offset 用来断线重连时只补发缺失内容，避免前端重复显示已经收到的文本。
  */
-export const subscribeChatStream = async ({ messageId, account, offset = 0, res }) => {
+export const subscribeChatStream = async ({ messageId, account, offset = 0, res, initialSession }) => {
   const id = Number(messageId);
   const safeOffset = Math.max(Number(offset) || 0, 0);
-  const session = await getMessageSession(id, account);
+  const session = initialSession ?? await getMessageSession(id, account);
+  if (initialSession && initialSession.account !== account) throw new Error('消息不存在或无权访问');
   if (!session) {
     writeSse(res, { event: 'error', data: 'messageId 不存在或无权限访问' });
     res.end();
@@ -245,6 +271,9 @@ export const subscribeChatStream = async ({ messageId, account, offset = 0, res 
 
   const state = activeStreams.get(id);
   const content = state?.content ?? session.message_content ?? '';
+  if (state?.tools.size) writeSse(res, { event: 'tool_snapshot', data: {
+    tools: [...state.tools.values()], summary: summarizeTools([...state.tools.values()]),
+  } });
   // 先补发 offset 之后的已生成内容，再决定是否继续挂到活跃流上。
   if (safeOffset < content.length) {
     writeSse(res, { event: 'text', data: content.slice(safeOffset) });

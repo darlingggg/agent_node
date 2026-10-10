@@ -86,6 +86,7 @@ export async function generateImageTool(args, runtime = {}) {
       conversationId,
       assistantSessionId,
       toolCallId,
+      invocationId,
       onEvent,
     } = runtime;
     if (
@@ -105,7 +106,7 @@ export async function generateImageTool(args, runtime = {}) {
       projectId,
       conversationId,
       assistantSessionId,
-      toolCallId,
+      toolCallId: invocationId || toolCallId,
       prompt: args.prompt,
       negativePrompt: args.negativePrompt || '',
       imageUrls: args.imageUrls || [],
@@ -117,6 +118,7 @@ export async function generateImageTool(args, runtime = {}) {
       taskId: task.taskId,
       account,
       storageKey,
+      signal: runtime.signal,
     });
     onEvent?.({ event: 'image_task', data: stored });
     return returnJson(

@@ -70,6 +70,7 @@ router.get('/agent/image-gen/tasks/:taskId/stream', authJWT, async (req, res) =>
       account: req.user.account,
       storageKey: req.user.storage_key,
       res,
+      observeOnly: req.query.observeOnly === '1',
     });
   } catch (error) {
     if (!res.writableEnded) {

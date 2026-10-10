@@ -53,8 +53,137 @@ test('动态模型及强度贯穿工具循环，并传回推理内容；无 effo
       );
       assert.equal(result.contextLimit, 8192);
       assert.equal(context.at(-1).content, '完成');
-      assert.ok(context.every((message) => !message.tool_calls && message.role !== 'tool'));
+      assert.equal(context.find((item) => item.role === 'tool')?.content, '工具结果');
+      assert.equal(context.find((item) => item.tool_calls)?.tool_calls[0].id, 'tool-1');
     }
+  } finally {
+    client.chat.completions.create = originalCreate;
+    functionMap.get_file_list = originalTool;
+  }
+});
+
+test('连续对话保留最近一次工具轮次，直到下一轮工具结果进入', async () => {
+  const originalCreate = client.chat.completions.create;
+  const originalTool = functionMap.get_file_list;
+  const requests = [];
+  try {
+    functionMap.get_file_list = async (_args, runtime) => `结果-${runtime.toolCallId}`;
+    client.chat.completions.create = async (request) => {
+      requests.push(request);
+      const id = ({ 1: 'first-a', 2: 'first-b', 5: 'third' })[requests.length];
+      return (async function* () {
+        if (id) {
+          yield {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id,
+                  type: 'function',
+                  function: { name: 'get_file_list', arguments: '{}' },
+                }],
+              },
+            }],
+          };
+        } else {
+          yield { choices: [{ delta: { content: `回复-${requests.length}` } }] };
+        }
+      })();
+    };
+
+    const context = [{ role: 'system', content: 'test' }];
+    const options = { modelConfig: { model: 'dynamic-model', contextLimit: 8192 } };
+    const toolIds = () => context.filter((item) => item.role === 'tool').map((item) => item.tool_call_id);
+
+    await chat('第一轮', () => {}, context, '', [], '', options);
+    assert.deepEqual(toolIds(), ['first-a', 'first-b']);
+    assert.deepEqual(
+      requests[2].messages.filter((item) => item.role === 'tool').map((item) => item.tool_call_id),
+      ['first-a', 'first-b'],
+    );
+
+    await chat('第二轮', () => {}, context, '', [], '', options);
+    assert.deepEqual(toolIds(), ['first-a', 'first-b']);
+    assert.deepEqual(
+      requests[3].messages.filter((item) => item.role === 'tool').map((item) => item.tool_call_id),
+      ['first-a', 'first-b'],
+    );
+
+    await chat('第三轮', () => {}, context, '', [], '', options);
+    assert.deepEqual(
+      requests[4].messages.filter((item) => item.role === 'tool').map((item) => item.tool_call_id),
+      ['first-a', 'first-b'],
+    );
+    assert.deepEqual(
+      requests[5].messages.filter((item) => item.role === 'tool').map((item) => item.tool_call_id),
+      ['third'],
+    );
+    assert.deepEqual(toolIds(), ['third']);
+    assert.deepEqual(
+      context.filter((item) => item.tool_calls).flatMap((item) => item.tool_calls.map((call) => call.id)),
+      ['third'],
+    );
+
+    await chat('第四轮', () => {}, context, '', [], '', options);
+    assert.deepEqual(toolIds(), ['third']);
+    assert.deepEqual(
+      requests[6].messages.filter((item) => item.role === 'tool').map((item) => item.tool_call_id),
+      ['third'],
+    );
+  } finally {
+    client.chat.completions.create = originalCreate;
+    functionMap.get_file_list = originalTool;
+  }
+});
+
+test('工具调用中断后移除未配对调用，并保留上一轮结果', async () => {
+  const originalCreate = client.chat.completions.create;
+  const originalTool = functionMap.get_file_list;
+  const controller = new AbortController();
+  let requestCount = 0;
+  try {
+    functionMap.get_file_list = async (_args, runtime) => {
+      if (runtime.toolCallId === 'interrupted') controller.abort();
+      return `结果-${runtime.toolCallId}`;
+    };
+    client.chat.completions.create = async () => {
+      requestCount += 1;
+      const id = requestCount === 1 ? 'completed' : requestCount === 3 ? 'interrupted' : null;
+      return (async function* () {
+        if (id) {
+          yield {
+            choices: [{
+              delta: {
+                tool_calls: [{
+                  index: 0,
+                  id,
+                  type: 'function',
+                  function: { name: 'get_file_list', arguments: '{}' },
+                }],
+              },
+            }],
+          };
+        } else {
+          yield { choices: [{ delta: { content: '完成' } }] };
+        }
+      })();
+    };
+
+    const context = [{ role: 'system', content: 'test' }];
+    const modelConfig = { model: 'dynamic-model', contextLimit: 8192 };
+    await chat('第一轮', () => {}, context, '', [], '', { modelConfig });
+    await assert.rejects(
+      chat('第二轮', () => {}, context, '', [], '', { modelConfig, signal: controller.signal }),
+      { name: 'AbortError' },
+    );
+    assert.deepEqual(
+      context.filter((item) => item.role === 'tool').map((item) => item.tool_call_id),
+      ['completed'],
+    );
+    assert.deepEqual(
+      context.filter((item) => item.tool_calls).flatMap((item) => item.tool_calls.map((call) => call.id)),
+      ['completed'],
+    );
   } finally {
     client.chat.completions.create = originalCreate;
     functionMap.get_file_list = originalTool;

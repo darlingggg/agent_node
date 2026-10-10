@@ -1,4 +1,5 @@
 import connection from '../../Mysql/index.js';
+import { toolCallStore } from '../toolCalls.js';
 import { createDeleteTitleSuffix, DELETED_TITLE_REGEXP } from './shared.js';
 
 export async function getOrCreateConversation({ projectId, title, conversationId = null }, user) {
@@ -129,6 +130,16 @@ export async function getConversationMessages(
   );
   const hasMore = rows.length > safeLimit;
   const list = rows.slice(0, safeLimit).reverse();
+  const toolSummaries = await toolCallStore.summaries(list.map((item) => item.message_id).filter(Boolean), user.account);
+  for (const item of list) {
+    const summary = toolSummaries.get(Number(item.message_id));
+    if (!summary) continue;
+    if (item.status !== 'streaming' && summary.running) {
+      summary[item.status === 'cancelled' ? 'cancelled' : 'failed'] += summary.running;
+      summary.running = 0;
+    }
+    item.tool_summary = summary;
+  }
   return {
     conversation: conversations[0],
     list,

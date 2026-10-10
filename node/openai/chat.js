@@ -1,9 +1,11 @@
 import { client, CONTEXT_LIMIT_TOKENS, tokenizer } from './client.js';
+import { randomUUID } from 'node:crypto';
 import { compressContext } from './context/context-compression.js';
 import { describeImage } from './media/image-desc.js';
 import { buildSystemPrompt, message } from './prompt/prompt.js';
 import { functionMap } from './tools/tool-handlers.js';
 import { tools } from './tools/tool-definitions.js';
+import { parseToolResult, toolResultStatus } from '../toolCalls.js';
 import { modelRequestOptions } from '../models/config.js';
 import {
   bindProjectDirPath,
@@ -112,6 +114,7 @@ async function executeToolCalls({
   assistantText,
   reasoningContent,
   context,
+  toolTurnId,
   projectDirPath,
   assistantSessionId,
   toolContext,
@@ -123,19 +126,25 @@ async function executeToolCalls({
     content: assistantText || null,
     reasoning_content: reasoningContent,
     tool_calls: toolCalls,
+    _toolTurnId: toolTurnId,
+    _sessionId: assistantSessionId,
   });
 
+  const invocations = new Map();
   const results = await Promise.allSettled(
     toolCalls.map(async (toolCall) => {
       const { id } = toolCall;
       const name = toolCall.function.name;
+      const invocation = { toolCallId: randomUUID(), name, startedAt: new Date().toISOString() };
+      invocations.set(toolCall, invocation);
       const handler = functionMap[name];
       if (!handler) throw new Error(`未注册的工具: ${name}`);
 
       const args = bindProjectDirPath(name, parseToolArguments(toolCall), projectDirPath);
+      const startedAt = invocation.startedAt;
       onEvent({
         event: 'tool_start',
-        data: `正在执行工具: ${name} $$ 参数: ${JSON.stringify(args)}`,
+        data: { ...invocation, args, status: 'running' },
       });
       throwIfAborted(signal);
 
@@ -143,17 +152,38 @@ async function executeToolCalls({
         ...toolContext,
         assistantSessionId,
         toolCallId: id,
+        invocationId: invocation.toolCallId,
         onEvent,
         signal,
       });
 
       throwIfAborted(signal);
-      onEvent({ event: 'tool_end', data: `工具执行完毕: ${name} $$ 结果: ${result}` });
-      return { role: 'tool', content: result, tool_call_id: id };
+      const status = toolResultStatus(result);
+      const parsedResult = parseToolResult(result);
+      onEvent({ event: 'tool_end', data: {
+        toolCallId: invocation.toolCallId, name, result: parsedResult, status,
+        error: status === 'failed' ? parsedResult?.message || '工具执行失败' : undefined,
+        finishedAt: new Date().toISOString(),
+        durationMs: Date.now() - new Date(startedAt).getTime(),
+      } });
+      return {
+        role: 'tool',
+        content: result,
+        tool_call_id: id,
+        _toolTurnId: toolTurnId,
+        _sessionId: assistantSessionId,
+      };
     }),
   );
 
   throwIfAborted(signal);
+  context.splice(
+    0,
+    context.length,
+    ...context.filter(
+      (item) => !(item.role === 'tool' || item.tool_calls) || item._toolTurnId === toolTurnId,
+    ),
+  );
   context.push(
     ...results.map((item, index) => {
       if (item.status === 'fulfilled') return item.value;
@@ -162,12 +192,14 @@ async function executeToolCalls({
       const toolCall = toolCalls[index];
       onEvent({
         event: 'tool_error',
-        data: `工具执行失败: ${toolCall.function.name} $$ 错误: ${error}`,
+        data: { ...invocations.get(toolCall), name: toolCall.function.name, status: 'failed', error, finishedAt: new Date().toISOString() },
       });
       return {
         role: 'tool',
         content: `工具执行失败: ${error}`,
         tool_call_id: toolCall.id,
+        _toolTurnId: toolTurnId,
+        _sessionId: assistantSessionId,
       };
     }),
   );
@@ -182,6 +214,7 @@ async function runChat({
   prompt,
   tracker,
   signal,
+  toolTurnId,
   appendUserMessage,
   userSessionId,
   assistantSessionId,
@@ -218,6 +251,7 @@ async function runChat({
       assistantText,
       reasoningContent,
       context,
+      toolTurnId,
       projectDirPath,
       assistantSessionId,
       toolContext,
@@ -233,6 +267,7 @@ async function runChat({
       prompt,
       tracker,
       signal,
+      toolTurnId,
       appendUserMessage: false,
       userSessionId: null,
       assistantSessionId,
@@ -244,16 +279,22 @@ async function runChat({
   }
 }
 
-function pruneCompletedToolContext(context, assistantSessionId, assistantText) {
-  const retained = context.filter((item) => item.role !== 'tool' && !item.tool_calls);
-  const finalAssistant = retained[retained.length - 1];
-  if (finalAssistant?.role === 'assistant') {
-    finalAssistant.content = assistantText || finalAssistant.content;
-    finalAssistant._sessionId = assistantSessionId || finalAssistant._sessionId;
-  } else if (assistantText) {
-    retained.push({ role: 'assistant', content: assistantText, _sessionId: assistantSessionId });
-  }
-  context.splice(0, context.length, ...retained);
+function pruneIncompleteToolCalls(context, toolTurnId) {
+  const completedIds = new Set(
+    context
+      .filter((item) => item.role === 'tool' && item._toolTurnId === toolTurnId)
+      .map((item) => item.tool_call_id),
+  );
+  context.splice(
+    0,
+    context.length,
+    ...context.filter(
+      (item) =>
+        item._toolTurnId !== toolTurnId ||
+        !item.tool_calls ||
+        item.tool_calls.every((toolCall) => completedIds.has(toolCall.id)),
+    ),
+  );
 }
 
 function buildUsageResult(tracker, context, modelConfig) {
@@ -280,6 +321,7 @@ export async function chat(
   const modelConfig = options.modelConfig;
   modelRequestOptions(modelConfig);
   const tracker = createUsageTracker(context);
+  const toolTurnId = Symbol('tool-turn');
   try {
     await runChat({
       userMessage,
@@ -290,16 +332,16 @@ export async function chat(
       prompt,
       tracker,
       signal: options.signal,
+      toolTurnId,
       appendUserMessage: true,
       userSessionId: options.userSessionId,
       assistantSessionId: options.assistantSessionId,
       toolContext: options.toolContext || {},
       modelConfig,
     });
-    pruneCompletedToolContext(context, options.assistantSessionId, tracker.assistantText);
     return buildUsageResult(tracker, context, modelConfig);
   } catch (error) {
-    pruneCompletedToolContext(context, options.assistantSessionId, tracker.assistantText);
+    pruneIncompleteToolCalls(context, toolTurnId);
     error.chatUsage = buildUsageResult(tracker, context, modelConfig);
     throw error;
   }
