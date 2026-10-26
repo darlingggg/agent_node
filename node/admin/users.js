@@ -42,7 +42,7 @@ export async function getAdminUserList({ pageSize, offset }) {
               u.role, u.storage_key, u.created_at, u.last_login_at, u.last_active_at
      ORDER BY u.created_at DESC, u.id DESC
      LIMIT ? OFFSET ?`,
-    [pageSize, offset]
+    [pageSize, offset],
   );
 
   return { rows, total: Number(countRow.total) || 0 };
@@ -56,7 +56,7 @@ export async function getAdminUserDetail(rawUserId) {
             role, storage_key, created_at, last_login_at, last_active_at
      FROM users
      WHERE id = ?`,
-    [userId]
+    [userId],
   );
 
   if (users.length === 0) throw new Error('用户不存在');
@@ -99,7 +99,7 @@ export async function updateAdminUser(actor, rawUserId, body) {
        FROM users
        WHERE id = ?
        FOR UPDATE`,
-      [userId]
+      [userId],
     );
 
     if (rows.length === 0) throw new Error('用户不存在');
@@ -131,17 +131,16 @@ export async function updateAdminUser(actor, rawUserId, body) {
     }
 
     if (assignments.length > 0) {
-      await db.query(
-        `UPDATE users SET ${assignments.join(', ')} WHERE id = ?`,
-        [...params, userId]
-      );
+      await db.query(`UPDATE users SET ${assignments.join(', ')} WHERE id = ?`, [
+        ...params,
+        userId,
+      ]);
     }
 
     if (wantsRole && role === 'disabled') {
-      await db.query(
-        'UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0',
-        [userId]
-      );
+      await db.query('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0', [
+        userId,
+      ]);
     }
 
     await db.commit();

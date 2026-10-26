@@ -2,7 +2,14 @@ import connection from '../../Mysql/index.js';
 import { getSignedObjectUrl } from '../cos/index.js';
 import { keysToCamelCase } from '../utils/case.js';
 
-const VALID_STATUSES = new Set(['queued', 'submitted', 'generating', 'storing', 'succeeded', 'failed']);
+const VALID_STATUSES = new Set([
+  'queued',
+  'submitted',
+  'generating',
+  'storing',
+  'succeeded',
+  'failed',
+]);
 const VALID_ORIGINS = new Set(['image_lab', 'agent_tool']);
 
 function parsePositiveInteger(value, name) {
@@ -34,7 +41,11 @@ function buildFilters({ account, projectId, status, origin, keyword, dateFrom, d
   }
   if (origin) {
     if (!VALID_ORIGINS.has(origin)) throw new Error('origin 格式不正确');
-    conditions.push(origin === 'agent_tool' ? 'a.assistant_session_id IS NOT NULL' : 'a.assistant_session_id IS NULL');
+    conditions.push(
+      origin === 'agent_tool'
+        ? 'a.assistant_session_id IS NOT NULL'
+        : 'a.assistant_session_id IS NULL',
+    );
   }
   if (keyword) {
     const value = String(keyword).trim();
@@ -79,9 +90,14 @@ async function toAdminTask(row) {
 /** 管理端分页查询 AI 生图任务及当前筛选范围汇总。 */
 export async function getAdminImageGenerations({ pageSize, offset, ...filters }) {
   const { where, params } = buildFilters(filters);
-  const summarySql = "SELECT COUNT(*) AS total, SUM(a.status = 'succeeded') AS succeeded, SUM(a.status = 'failed') AS failed, SUM(a.status IN ('queued', 'submitted', 'generating', 'storing')) AS processing, COALESCE(SUM(a.stored_size), 0) AS stored_bytes FROM ai_generated_images a " + where;
+  const summarySql =
+    "SELECT COUNT(*) AS total, SUM(a.status = 'succeeded') AS succeeded, SUM(a.status = 'failed') AS failed, SUM(a.status IN ('queued', 'submitted', 'generating', 'storing')) AS processing, COALESCE(SUM(a.stored_size), 0) AS stored_bytes FROM ai_generated_images a " +
+    where;
   const [[summaryRow]] = await connection.query(summarySql, params);
-  const listSql = 'SELECT a.*, u.id AS user_id, u.nickname AS user_nickname, p.title AS project_title FROM ai_generated_images a LEFT JOIN users u ON u.account = a.account COLLATE utf8mb4_unicode_ci LEFT JOIN projects p ON p.id = a.project_id ' + where + ' ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?';
+  const listSql =
+    'SELECT a.*, u.id AS user_id, u.nickname AS user_nickname, p.title AS project_title FROM ai_generated_images a LEFT JOIN users u ON u.account = a.account COLLATE utf8mb4_unicode_ci LEFT JOIN projects p ON p.id = a.project_id ' +
+    where +
+    ' ORDER BY a.created_at DESC, a.id DESC LIMIT ? OFFSET ?';
   const [rows] = await connection.query(listSql, [...params, pageSize, offset]);
 
   return {

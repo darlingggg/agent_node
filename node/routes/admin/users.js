@@ -1,9 +1,5 @@
 import express from 'express';
-import {
-  getAdminUserDetail,
-  getAdminUserList,
-  updateAdminUser,
-} from '../../admin/users.js';
+import { getAdminUserDetail, getAdminUserList, updateAdminUser } from '../../admin/users.js';
 import { createPageResult, parsePagination } from '../../utils/pagination.js';
 
 const router = express.Router();

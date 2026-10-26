@@ -1,6 +1,6 @@
 import express from 'express';
 import authJWT from '../../middleware/authJWT.js';
-import { getProjectInfo } from '../../project/index.js';
+import { getProjectInfo } from '../../project.js';
 import {
   createStreamingAssistantSession,
   createUserChatSession,
@@ -12,11 +12,16 @@ import {
   cancelChatStream,
   runAiChat,
   startChatStream,
+  getActiveStream,
   subscribeChatStream,
-} from '../../chatStream/index.js';
+} from '../../chatStream.js';
 import { markUserActive } from '../../utils/activity.js';
 import { contextCache } from './context.js';
+import { selectChatModel } from '../../models/service.js';
+import { saveConversationModel } from '../../session/conversations.js';
 import { prepareSse, writeSse } from './sse.js';
+import { toolCallStore, summarizeTools } from '../../toolCalls.js';
+import { listImageGenerationTasks } from '../../imageGeneration.js';
 
 const router = express.Router();
 
@@ -63,13 +68,15 @@ function formatUsageSettlement(result, usage, status) {
       estimated: Boolean(usage?.estimated),
       compressed: Boolean(usage?.compressed),
     },
-    conversation: stats ? {
-      promptTokens: Number(stats.prompt_tokens) || 0,
-      completionTokens: Number(stats.completion_tokens) || 0,
-      totalTokens: Number(stats.total_tokens) || 0,
-      currentContextTokens: Number(stats.current_context_tokens) || 0,
-      contextLimit: Number(stats.context_limit) || 0,
-    } : null,
+    conversation: stats
+      ? {
+          promptTokens: Number(stats.prompt_tokens) || 0,
+          completionTokens: Number(stats.completion_tokens) || 0,
+          totalTokens: Number(stats.total_tokens) || 0,
+          currentContextTokens: Number(stats.current_context_tokens) || 0,
+          contextLimit: Number(stats.context_limit) || 0,
+        }
+      : null,
   };
 }
 
@@ -82,11 +89,16 @@ router.post('/chat/stream', authJWT, async (req, res) => {
   try {
     const project = await getProjectInfo(projectId, req.user);
     await markUserActive(req.user.id);
-    const conversation = await getOrCreateConversation({
-      projectId,
-      title: title || prompt.slice(0, 30),
-      conversationId,
-    }, req.user);
+    const conversation = await getOrCreateConversation(
+      {
+        projectId,
+        title: title || prompt.slice(0, 30),
+        conversationId,
+      },
+      req.user,
+    );
+    const modelConfig = await selectChatModel(req.body, conversation);
+    await saveConversationModel(conversation.id, modelConfig, req.user);
     const contextKey = String(conversation.id);
     const cachedHistory = conversation.title ? contextCache.get(contextKey) : undefined;
 
@@ -105,17 +117,25 @@ router.post('/chat/stream', authJWT, async (req, res) => {
       context = context.concat(cachedHistory);
     }
 
-    const userSession = await createUserChatSession({
-      title: conversation.title,
-      projectId,
-      content: prompt,
-      conversationId: conversation.id,
-    }, req.user);
-    const assistantSession = await createStreamingAssistantSession({
-      title: conversation.title,
-      projectId,
-      conversationId: conversation.id,
-    }, req.user);
+    const userSession = await createUserChatSession(
+      {
+        title: conversation.title,
+        projectId,
+        content: prompt,
+        conversationId: conversation.id,
+        ...modelConfig,
+      },
+      req.user,
+    );
+    const assistantSession = await createStreamingAssistantSession(
+      {
+        title: conversation.title,
+        projectId,
+        conversationId: conversation.id,
+        ...modelConfig,
+      },
+      req.user,
+    );
 
     prepareSse(res);
     writeSse(res, {
@@ -125,31 +145,35 @@ router.post('/chat/stream', authJWT, async (req, res) => {
         assistantSessionId: assistantSession.sessionId,
         assistantMessageId: assistantSession.messageId,
         conversationId: conversation.id,
+        model: modelConfig.model,
+        reasoningEffort: modelConfig.reasoningEffort,
       },
     });
 
     startChatStream({
       messageId: assistantSession.messageId,
       sessionId: assistantSession.sessionId,
-      run: (send, signal) => runAiChat(
-        buildProjectMessage(prompt, project),
-        send,
-        context,
-        project.dir_path,
-        imageUrls,
-        prompt,
-        {
-          signal,
-          userSessionId: userSession.id,
-          assistantSessionId: assistantSession.sessionId,
-          toolContext: {
-            account: req.user.account,
-            storageKey: req.user.storage_key,
-            projectId: Number(projectId),
-            conversationId: conversation.id,
+      run: (send, signal) =>
+        runAiChat(
+          buildProjectMessage(prompt, project),
+          send,
+          context,
+          project.dir_path,
+          imageUrls,
+          prompt,
+          {
+            modelConfig,
+            signal,
+            userSessionId: userSession.id,
+            assistantSessionId: assistantSession.sessionId,
+            toolContext: {
+              account: req.user.account,
+              storageKey: req.user.storage_key,
+              projectId: Number(projectId),
+              conversationId: conversation.id,
+            },
           },
-        },
-      ),
+        ),
       onSettled: async (usage, status) => {
         const result = await settleConversationUsage({
           conversationId: conversation.id,
@@ -173,6 +197,7 @@ router.post('/chat/stream', authJWT, async (req, res) => {
       account: req.user.account,
       offset: 0,
       res,
+      initialSession: { account: req.user.account, status: 'streaming' },
     });
   } catch (error) {
     if (res.headersSent) {
@@ -181,6 +206,31 @@ router.post('/chat/stream', authJWT, async (req, res) => {
     }
     res.cc(1, error.message);
   }
+});
+
+router.get('/chat/messages/:messageId/tools', authJWT, async (req, res) => {
+  try {
+    const active = getActiveStream(req.params.messageId);
+    if (active) await active.toolPersistence;
+    const { tools, sessionId } = await toolCallStore.list(req.params.messageId, req.user.account);
+    if (!active) for (const tool of tools) {
+      if (tool.status !== 'running') continue;
+      tool.status = 'failed';
+      tool.error = '生成任务已结束或连接已中断，未收到完整结果';
+    }
+    let page = 1;
+    let hasMore;
+    do {
+      const result = await listImageGenerationTasks({ account: req.user.account, assistantSessionId: sessionId, page, pageSize: 50 });
+      for (const task of result.list) {
+        const tool = tools.find((item) => item.toolCallId === task.toolCallId);
+        if (tool) (tool.imageTasks ??= []).push(task);
+      }
+      hasMore = result.pagination.hasMore;
+      page += 1;
+    } while (hasMore);
+    res.cc(0, '工具过程', { tools, summary: summarizeTools(tools) });
+  } catch (error) { res.cc(1, error.message); }
 });
 
 router.post('/chat/messages/:messageId/cancel', authJWT, async (req, res) => {

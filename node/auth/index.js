@@ -23,13 +23,7 @@ const SALT_ROUNDS = 10;
 /** 昵称默认值，未传时使用账号 */
 const DEFAULT_NICKNAME = (account) => account;
 
-const USER_ACCOUNT_TABLES = [
-  'projects',
-  'sessions',
-  'log',
-  'snapshots',
-  'ai_generated_images',
-];
+const USER_ACCOUNT_TABLES = ['projects', 'sessions', 'log', 'snapshots', 'ai_generated_images'];
 
 function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object, key);
@@ -141,7 +135,7 @@ async function saveRefreshToken(userId, refreshToken) {
 
   await connection.query(
     'INSERT INTO refresh_tokens (user_id, token_hash, expires_at) VALUES (?, ?, ?)',
-    [userId, tokenHash, expiresAt]
+    [userId, tokenHash, expiresAt],
   );
 }
 
@@ -153,7 +147,7 @@ async function saveRefreshToken(userId, refreshToken) {
 export async function issueTokenPair(user, { recordLogin = false } = {}) {
   const [rows] = await connection.query(
     'SELECT id, account, nickname, role FROM users WHERE id = ? LIMIT 1',
-    [user.id]
+    [user.id],
   );
   if (rows.length === 0) throw new Error('用户不存在');
 
@@ -201,10 +195,7 @@ export async function register(account, password, nickname) {
 
   const finalNickname = nickname?.trim() || DEFAULT_NICKNAME(account);
 
-  const [exists] = await connection.query(
-    'SELECT id FROM users WHERE account = ?',
-    [account]
-  );
+  const [exists] = await connection.query('SELECT id FROM users WHERE account = ?', [account]);
 
   if (exists.length > 0) {
     throw new Error('账号已存在');
@@ -215,7 +206,7 @@ export async function register(account, password, nickname) {
 
   const [result] = await connection.query(
     'INSERT INTO users (account, password, nickname, storage_key) VALUES (?, ?, ?, ?)',
-    [account, hashedPassword, finalNickname, storageKey]
+    [account, hashedPassword, finalNickname, storageKey],
   );
 
   const user = { id: result.insertId, account, nickname: finalNickname };
@@ -235,7 +226,7 @@ export async function login(account, password) {
 
   const [rows] = await connection.query(
     'SELECT id, account, nickname, password FROM users WHERE account = ?',
-    [account]
+    [account],
   );
 
   if (rows.length === 0) {
@@ -249,11 +240,14 @@ export async function login(account, password) {
     throw new Error('账号或密码错误');
   }
 
-  return issueTokenPair({
-    id: user.id,
-    account: user.account,
-    nickname: user.nickname,
-  }, { recordLogin: true });
+  return issueTokenPair(
+    {
+      id: user.id,
+      account: user.account,
+      nickname: user.nickname,
+    },
+    { recordLogin: true },
+  );
 }
 
 /**
@@ -264,7 +258,7 @@ export async function login(account, password) {
 export async function getUserProfile(userId) {
   const [rows] = await connection.query(
     'SELECT id, account, nickname, avatar, qq_openid, wx_openid, role FROM users WHERE id = ?',
-    [userId]
+    [userId],
   );
 
   if (rows.length === 0) {
@@ -311,7 +305,7 @@ export async function updateUserProfile(userId, body) {
 
     const [rows] = await db.query(
       'SELECT id, account, nickname, avatar, password, qq_openid, wx_openid FROM users WHERE id = ? FOR UPDATE',
-      [userId]
+      [userId],
     );
 
     if (rows.length === 0) {
@@ -356,16 +350,16 @@ export async function updateUserProfile(userId, body) {
     }
 
     if (assignments.length > 0) {
-      await db.query(
-        `UPDATE users SET ${assignments.join(', ')} WHERE id = ?`,
-        [...params, userId]
-      );
+      await db.query(`UPDATE users SET ${assignments.join(', ')} WHERE id = ?`, [
+        ...params,
+        userId,
+      ]);
     }
 
     if (hasOwn(values, 'account') && values.account !== current.account) {
       const [accountRows] = await db.query(
         'SELECT id FROM users WHERE account = ? AND id <> ? LIMIT 1',
-        [values.account, userId]
+        [values.account, userId],
       );
 
       if (accountRows.length > 0) {
@@ -374,7 +368,10 @@ export async function updateUserProfile(userId, body) {
         try {
           await db.query('UPDATE users SET account = ? WHERE id = ?', [values.account, userId]);
           for (const table of USER_ACCOUNT_TABLES) {
-            await db.query(`UPDATE ${table} SET account = ? WHERE account = ?`, [values.account, current.account]);
+            await db.query(`UPDATE ${table} SET account = ? WHERE account = ?`, [
+              values.account,
+              current.account,
+            ]);
           }
           updatedFields.push('account');
           shouldRotateTokens = true;
@@ -389,10 +386,9 @@ export async function updateUserProfile(userId, body) {
     }
 
     if (shouldRotateTokens) {
-      await db.query(
-        'UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0',
-        [userId]
-      );
+      await db.query('UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0', [
+        userId,
+      ]);
     }
 
     await db.commit();
@@ -410,10 +406,12 @@ export async function updateUserProfile(userId, body) {
     ...profile,
     updatedFields,
     ignoredFields: [...new Set(ignoredFields)],
-    ...(tokenPair ? {
-      accessToken: tokenPair.accessToken,
-      refreshToken: tokenPair.refreshToken,
-    } : {}),
+    ...(tokenPair
+      ? {
+          accessToken: tokenPair.accessToken,
+          refreshToken: tokenPair.refreshToken,
+        }
+      : {}),
   };
 }
 
@@ -435,7 +433,7 @@ export async function refreshAccessToken(refreshToken) {
      FROM refresh_tokens rt
      JOIN users u ON u.id = rt.user_id
      WHERE rt.token_hash = ?`,
-    [tokenHash]
+    [tokenHash],
   );
 
   if (rows.length === 0) {
@@ -477,10 +475,7 @@ export async function logout(refreshToken) {
 
   const tokenHash = hashRefreshToken(refreshToken);
 
-  await connection.query(
-    'UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?',
-    [tokenHash]
-  );
+  await connection.query('UPDATE refresh_tokens SET revoked = 1 WHERE token_hash = ?', [tokenHash]);
 }
 
 /**
@@ -490,7 +485,7 @@ export async function logout(refreshToken) {
 export async function revokeAllRefreshTokens(userId) {
   await connection.query(
     'UPDATE refresh_tokens SET revoked = 1 WHERE user_id = ? AND revoked = 0',
-    [userId]
+    [userId],
   );
 }
 

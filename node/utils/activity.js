@@ -18,6 +18,6 @@ export async function markProjectFileActivity(dirPath, db = connection) {
      SET p.update_time = CURRENT_TIMESTAMP,
          u.last_active_at = CURRENT_TIMESTAMP
      WHERE p.dir_path = ? AND p.deleted_at IS NULL`,
-    [dirPath]
+    [dirPath],
   );
 }

@@ -13,18 +13,14 @@ import {
   buildWechatOAuthUrl,
   loginWithWechatCode,
   verifyWechatServerSignature,
-} from '../../auth/wechat.js';
-import { buildQQOAuthUrl, loginWithQQCode } from '../../auth/qq.js';
-import { normalizeOAuthReturnUrl, OAuthSessionStore } from '../../auth/oauthSession.js';
-import { getOAuthCallbackAction } from '../../auth/oauthCallback.js';
+} from '../../auth/providers/wechat.js';
+import { buildQQOAuthUrl, loginWithQQCode } from '../../auth/providers/qq.js';
+import { normalizeOAuthReturnUrl, OAuthSessionStore } from '../../auth/oauth/oauthSession.js';
+import { getOAuthCallbackAction } from '../../auth/oauth/oauthCallback.js';
 import { QQ_REDIRECT_URI } from '../../../key.js';
 
 const router = express.Router();
-const allowedOrigins = [
-  'http://localhost:5173',
-  'https://darling.xin',
-  'https://www.darling.xin',
-];
+const allowedOrigins = ['http://localhost:5173', 'https://darling.xin', 'https://www.darling.xin'];
 const wechatSessions = new OAuthSessionStore('wechat');
 const qqSessions = new OAuthSessionStore('qq');
 const oauthPages = {
@@ -86,7 +82,10 @@ function sendOAuthResultPage(res, result, returnUrl = '') {
 
   res.status(200);
   res.setHeader('Cache-Control', 'no-store');
-  res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; frame-ancestors 'none'");
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; frame-ancestors 'none'",
+  );
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-OAuth-Result', status);
@@ -166,7 +165,11 @@ router.get('/auth/wechat/callback', async (req, res) => {
       status: 'processing',
       message: '扫码完成，正在登录...',
     });
-    const result = await loginWithWechatCode(String(req.query.code || ''), authSession, authSession.account || '');
+    const result = await loginWithWechatCode(
+      String(req.query.code || ''),
+      authSession,
+      authSession.account || '',
+    );
     publishLoginResult(wechatSessions, state, '微信', result);
     return sendOAuthResultPage(res, true);
   } catch (error) {
@@ -222,7 +225,11 @@ async function handleQQCallback(req, res) {
       status: 'processing',
       message: '扫码完成，正在登录...',
     });
-    const result = await loginWithQQCode(String(req.query.code || ''), authSession, authSession.account || '');
+    const result = await loginWithQQCode(
+      String(req.query.code || ''),
+      authSession,
+      authSession.account || '',
+    );
     publishLoginResult(qqSessions, state, 'QQ ', result);
     return sendOAuthResultPage(res, true, authSession.returnUrl);
   } catch (error) {

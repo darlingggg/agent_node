@@ -19,11 +19,10 @@ function getChildEnv() {
   };
   if (!/--max-old-space-size(?:=|\s)/.test(env.NODE_OPTIONS || '')) {
     const configuredSize = Number.parseInt(process.env.BUILD_MAX_OLD_SPACE_SIZE || '', 10);
-    const maxOldSpaceSize = Number.isInteger(configuredSize)
-      && configuredSize >= 128
-      && configuredSize <= 4096
-      ? configuredSize
-      : 512;
+    const maxOldSpaceSize =
+      Number.isInteger(configuredSize) && configuredSize >= 128 && configuredSize <= 4096
+        ? configuredSize
+        : 512;
     env.NODE_OPTIONS = `${env.NODE_OPTIONS || ''} --max-old-space-size=${maxOldSpaceSize}`.trim();
   }
   return env;
@@ -95,7 +94,9 @@ export function execCommand(file, args, projectPath, options = {}) {
 
     child.stdout?.on('data', (chunk) => stdout.push(chunk));
     child.stderr?.on('data', (chunk) => stderr.push(chunk));
-    child.on('error', (error) => { spawnError = error; });
+    child.on('error', (error) => {
+      spawnError = error;
+    });
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -119,7 +120,7 @@ export function execCommand(file, args, projectPath, options = {}) {
       const stderrText = stderr.read(encoding);
       resolve({
         success: !spawnError && !timedOut && code === 0,
-        code: timedOut ? 'ETIMEDOUT' : (spawnError?.code || code),
+        code: timedOut ? 'ETIMEDOUT' : spawnError?.code || code,
         signal,
         timedOut,
         stdout: stdout.read(encoding),
@@ -142,10 +143,5 @@ export function runPnpm(args, projectPath, timeout) {
 }
 
 export function runWrangler(args, projectPath, timeout = CLOUDFLARE_QUERY_TIMEOUT_MS) {
-  return execCommand(
-    process.execPath,
-    [WRANGLER_CLI_PATH, ...args],
-    projectPath,
-    { timeout },
-  );
+  return execCommand(process.execPath, [WRANGLER_CLI_PATH, ...args], projectPath, { timeout });
 }

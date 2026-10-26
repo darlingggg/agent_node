@@ -1,7 +1,7 @@
 import express from 'express';
 import authJWT from '../../middleware/authJWT.js';
-import { addLog, getLogList } from '../../log/index.js';
-import { addSnapshot, changeSnapshot, deleteSnapshot, getSnapshotList } from '../../snapshot/index.js';
+import { addLog, getLogList } from '../../log.js';
+import { addSnapshot, changeSnapshot, deleteSnapshot, getSnapshotList } from '../../snapshot.js';
 
 const router = express.Router();
 

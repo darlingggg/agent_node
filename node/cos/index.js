@@ -43,75 +43,86 @@ export const getCredential = (storageKey) => {
 
   const policy = {
     version: '2.0',
-    statement: [{
-      action: [
-        'name/cos:PutObject',
-        'name/cos:PostObject',
-        'name/cos:InitiateMultipartUpload',
-        'name/cos:ListMultipartUploads',
-        'name/cos:ListParts',
-        'name/cos:UploadPart',
-        'name/cos:CompleteMultipartUpload',
-      ],
-      effect: 'allow',
-      principal: { qcs: ['*'] },
-      resource: [
-        `qcs::cos:${COS_CONFIG.region}:uid/${appId}:prefix//${appId}/${shortBucketName}/${allowPrefix}`,
-      ],
-    }],
+    statement: [
+      {
+        action: [
+          'name/cos:PutObject',
+          'name/cos:PostObject',
+          'name/cos:InitiateMultipartUpload',
+          'name/cos:ListMultipartUploads',
+          'name/cos:ListParts',
+          'name/cos:UploadPart',
+          'name/cos:CompleteMultipartUpload',
+        ],
+        effect: 'allow',
+        principal: { qcs: ['*'] },
+        resource: [
+          `qcs::cos:${COS_CONFIG.region}:uid/${appId}:prefix//${appId}/${shortBucketName}/${allowPrefix}`,
+        ],
+      },
+    ],
   };
 
   return new Promise((resolve, reject) => {
-    STS.getCredential({
-      secretId: COS_CONFIG.secretId,
-      secretKey: COS_CONFIG.secretKey,
-      durationSeconds: DURATION_SECONDS,
-      policy,
-    }, (err, credential) => {
-      if (err) return reject(err);
-      resolve({
-        tmpSecretId: credential.credentials.tmpSecretId,
-        tmpSecretKey: credential.credentials.tmpSecretKey,
-        sessionToken: credential.credentials.sessionToken,
-        startTime: credential.startTime,
-        expiredTime: credential.expiredTime,
-        bucket: COS_CONFIG.bucket,
-        region: COS_CONFIG.region,
-        uploadPrefix: `uploads/${storageKey}/`,
-      });
-    });
+    STS.getCredential(
+      {
+        secretId: COS_CONFIG.secretId,
+        secretKey: COS_CONFIG.secretKey,
+        durationSeconds: DURATION_SECONDS,
+        policy,
+      },
+      (err, credential) => {
+        if (err) return reject(err);
+        resolve({
+          tmpSecretId: credential.credentials.tmpSecretId,
+          tmpSecretKey: credential.credentials.tmpSecretKey,
+          sessionToken: credential.credentials.sessionToken,
+          startTime: credential.startTime,
+          expiredTime: credential.expiredTime,
+          bucket: COS_CONFIG.bucket,
+          region: COS_CONFIG.region,
+          uploadPrefix: `uploads/${storageKey}/`,
+        });
+      },
+    );
   });
 };
 
 /** 按对象键前缀分页查询 COS 对象。 */
 export function listObjects({ prefix = 'uploads/', marker = '', maxKeys = 20 } = {}) {
   return new Promise((resolve, reject) => {
-    cos.getBucket({
-      Bucket: COS_CONFIG.bucket,
-      Region: COS_CONFIG.region,
-      Prefix: prefix,
-      Marker: marker,
-      MaxKeys: maxKeys,
-    }, (error, data) => {
-      if (error) reject(error);
-      else resolve(data);
-    });
+    cos.getBucket(
+      {
+        Bucket: COS_CONFIG.bucket,
+        Region: COS_CONFIG.region,
+        Prefix: prefix,
+        Marker: marker,
+        MaxKeys: maxKeys,
+      },
+      (error, data) => {
+        if (error) reject(error);
+        else resolve(data);
+      },
+    );
   });
 }
 
 /** 生成一小时有效的对象访问地址，兼容私有读存储桶。 */
 export function getSignedObjectUrl(key) {
   return new Promise((resolve, reject) => {
-    cos.getObjectUrl({
-      Bucket: COS_CONFIG.bucket,
-      Region: COS_CONFIG.region,
-      Key: key,
-      Sign: true,
-      Expires: DURATION_SECONDS,
-    }, (error, data) => {
-      if (error) reject(error);
-      else resolve(data.Url);
-    });
+    cos.getObjectUrl(
+      {
+        Bucket: COS_CONFIG.bucket,
+        Region: COS_CONFIG.region,
+        Key: key,
+        Sign: true,
+        Expires: DURATION_SECONDS,
+      },
+      (error, data) => {
+        if (error) reject(error);
+        else resolve(data.Url);
+      },
+    );
   });
 }
 
@@ -123,8 +134,13 @@ export function getSignedObjectUrl(key) {
  */
 export async function uploadGeneratedImageToCos(imageUrl, storageKey) {
   const normalizedStorageKey = String(storageKey || '').trim();
-  if (!normalizedStorageKey || normalizedStorageKey === '.' || normalizedStorageKey === '..'
-    || normalizedStorageKey.includes('/') || normalizedStorageKey.includes('\\')) {
+  if (
+    !normalizedStorageKey ||
+    normalizedStorageKey === '.' ||
+    normalizedStorageKey === '..' ||
+    normalizedStorageKey.includes('/') ||
+    normalizedStorageKey.includes('\\')
+  ) {
     throw new Error('用户存储目录格式不正确');
   }
 
@@ -183,19 +199,22 @@ export async function uploadGeneratedImageToCos(imageUrl, storageKey) {
 
   const key = `uploads/${normalizedStorageKey}/ai_generated/${Date.now()}-${randomUUID()}.webp`;
   await new Promise((resolve, reject) => {
-    cos.putObject({
-      Bucket: COS_CONFIG.bucket,
-      Region: COS_CONFIG.region,
-      Key: key,
-      Body: optimized.data,
-      ContentType: 'image/webp',
-      Headers: {
-        'x-cos-meta-source': 'ai_generated',
+    cos.putObject(
+      {
+        Bucket: COS_CONFIG.bucket,
+        Region: COS_CONFIG.region,
+        Key: key,
+        Body: optimized.data,
+        ContentType: 'image/webp',
+        Headers: {
+          'x-cos-meta-source': 'ai_generated',
+        },
       },
-    }, (error, data) => {
-      if (error) reject(error);
-      else resolve(data);
-    });
+      (error, data) => {
+        if (error) reject(error);
+        else resolve(data);
+      },
+    );
   });
 
   return {

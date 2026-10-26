@@ -10,7 +10,7 @@ const authJWT = async (req, res, next) => {
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     res.status(401).json({
       status: 1,
-      message: '未登录或 Token 无效'
+      message: '未登录或 Token 无效',
     });
     return;
   }
@@ -23,7 +23,7 @@ const authJWT = async (req, res, next) => {
   } catch {
     res.status(401).json({
       status: 1,
-      message: 'Token 已过期或无效'
+      message: 'Token 已过期或无效',
     });
     return;
   }
@@ -34,13 +34,13 @@ const authJWT = async (req, res, next) => {
        FROM users
        WHERE id = ?
        LIMIT 1`,
-      [payload.id]
+      [payload.id],
     );
 
     if (rows.length === 0) {
       res.status(401).json({
         status: 1,
-        message: '用户不存在或 Token 已失效'
+        message: '用户不存在或 Token 已失效',
       });
       return;
     }
@@ -49,7 +49,7 @@ const authJWT = async (req, res, next) => {
     if (user.role === 'disabled') {
       res.status(403).json({
         status: 1,
-        message: '账号已被禁用'
+        message: '账号已被禁用',
       });
       return;
     }

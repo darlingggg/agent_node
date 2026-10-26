@@ -110,10 +110,7 @@ router.post('/file/meta', async (req, res) => {
 router.post('/file/download', authJWT, memoryUpload.array('files', 20), async (req, res) => {
   try {
     const dirPath = req.body.dirPath;
-    const urls = [
-      ...parseStringList(req.body.urls),
-      ...parseStringList(req.body.url),
-    ];
+    const urls = [...parseStringList(req.body.urls), ...parseStringList(req.body.url)];
     const files = Array.isArray(req.files) ? req.files : [];
     const saveNames = parseStringList(
       req.body.saveNames ?? req.body.fileNames ?? req.body.fileName,

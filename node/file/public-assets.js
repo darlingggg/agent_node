@@ -8,7 +8,7 @@ import {
   resolveRootDir,
   resolveTargetPath,
   touchProjectUpdateTime,
-} from './path-utils.js';
+} from './project/path-utils.js';
 
 const DOWNLOAD_MAX_BYTES = 10 * 1024 * 1024;
 const CONTENT_TYPE_EXT = {
@@ -71,7 +71,9 @@ function guessDownloadExt(url, contentType) {
 }
 
 function normalizePublicSubDir(subPath = '/') {
-  let cleaned = String(subPath ?? '/').trim().replace(/\\/g, '/');
+  let cleaned = String(subPath ?? '/')
+    .trim()
+    .replace(/\\/g, '/');
   if (!cleaned || cleaned === '/') return 'public';
   cleaned = cleaned.replace(/^\/+/, '').replace(/\/+$/, '');
   if (!cleaned) return 'public';
@@ -211,7 +213,8 @@ export async function importFilesToPublic({
     try {
       let fileName = sanitizeFileName(customName || originalName);
       if (!path.extname(fileName) && file?.mimetype) {
-        fileName += CONTENT_TYPE_EXT[String(file.mimetype).split(';')[0].trim().toLowerCase()] || '';
+        fileName +=
+          CONTENT_TYPE_EXT[String(file.mimetype).split(';')[0].trim().toLowerCase()] || '';
       }
       const buffer = Buffer.isBuffer(file?.buffer) ? file.buffer : Buffer.from(file?.buffer || []);
       const saved = await writeBufferToPublicDir(buffer, fileName, targetDir, rootDir);
