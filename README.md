@@ -110,10 +110,20 @@ QQ / 微信回调地址和回跳域名需要与部署域名、第三方平台登
 | `AI_CONTEXT_COMPRESSION_RATIO` | 上下文压缩阈值比例，默认 `0.8` |
 | `AI_SUMMARY_MAX_TOKENS` | 压缩摘要最大输出 Token，默认 `1600` |
 | `AI_RECENT_TURNS_TO_KEEP` | 压缩时保留的最近用户轮次，默认 `3` |
+| `DEEPSEEK_API_KEY` | 网页搜索与抓取使用的 DeepSeek API Key，与聊天模型配置独立；未配置时仅这两个工具返回失败 |
 | `BUILD_MAX_OLD_SPACE_SIZE` | 构建子进程的默认内存上限，默认 `512` MB |
 | `AI_MODELS_DB_TEST` | 设置为 `1` 时启用数据库集成测试 |
 
 环境变量通过终端或进程管理器注入。服务不会自动读取 `.env`；若采用该文件，可使用 `node --env-file=.env node/index.js` 启动。
+
+### 网页搜索与读取工具
+
+`node/openai/tools/web-tools.js` 通过 Function Calling 提供两个工具，已注册到现有聊天工具循环，沿用工具过程的 SSE 事件与历史持久化：
+
+- `search_web({ query, count? })`：搜索词为 1-128 个 Unicode 字符，默认返回 5 条，最多 10 条；返回标题、链接、摘要、站点及可用的发布时间，无结果也视为搜索成功。
+- `fetch_page({ url, maxChars? })`：读取 HTTP/HTTPS 网页，返回来源链接、标题和 Markdown 正文；默认最多 20000 个字符，可设为 1000-50000，截断时返回 `truncated: true` 和 `originalLength`。
+
+服务端设置 `DEEPSEEK_API_KEY` 后重启即可使用，无需切换聊天模型或安装额外依赖。两个工具分别请求 `https://api.deepseek.com/v1/tools/search` 和 `/v1/tools/fetch`，使用独立的 DeepSeek 凭据，不复用聊天模型的 `baseURL` 或密钥。请求 30 秒超时，停止生成会取消正在执行的请求；失败结果采用 `{ success: false, message, data: null }`。Search / Fetch 按调用次数单独计费，不计入现有模型 Token 用量，具体限制与计费见 [DeepSeek 官方文档](https://api-docs.deepseek.com/zh-cn/guides/search/)。
 
 ## 本地启动
 
@@ -217,6 +227,6 @@ pnpm test
 
 前后端一起更新后运行 `pnpm db:migrate:tools`，创建可重复迁移的 `message_tool_calls` 表。工具事件带独立调用 ID，参数、结果与开始顺序关联到助手消息；并行调用不会按名称或最近一次调用猜测匹配。
 
-历史消息仅返回 `toolSummary`，展开时通过 `GET /chat/messages/:messageId/tools` 读取过程。接口校验消息、项目和有效会话所属账号，关联图片任务并返回当前图片地址；查看记录不会执行工具。旧消息缺少结构化记录时只展示正文。聊天中的图片任务订阅使用 `observeOnly=1`，服务器没有活跃图片任务时只报告状态，不重新发起生图。
+历史消息列表返回 `toolSummary`，前端为可见消息自动通过 `GET /chat/messages/:messageId/tools` 读取过程，最多并发 4 个请求，并按 `textOffset` 将工具穿插到正文中。实时正文和工具事件增量维护展示片段，仅历史加载与重连快照完整重建；重连先补齐正文，再发送工具快照。接口校验消息、项目和有效会话所属账号，关联图片任务并返回当前图片地址；查看记录不会执行工具。旧消息缺少结构化记录时只展示正文。聊天中的图片任务订阅使用 `observeOnly=1`，服务器没有活跃图片任务时只报告状态，不重新发起生图。
 
 本地隔离数据库验证可运行 `$env:TOOL_CALLS_DB_TEST='1'; pnpm test`。测试创建连接独享的临时表，覆盖持久化、乱序结果、权限、历史摘要及 SSE 重连快照，不写实际项目记录。

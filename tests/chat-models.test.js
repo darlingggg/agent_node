@@ -6,6 +6,60 @@ import { compressContext } from '../node/openai/context/context-compression.js';
 import { createUsageTracker } from '../node/openai/context/usage.js';
 import { functionMap } from '../node/openai/tools/tool-handlers.js';
 
+test('网页工具通过真实处理函数完成搜索、读取和回答，沿用工具事件与上下文', async (t) => {
+  const previousKey = process.env.DEEPSEEK_API_KEY;
+  process.env.DEEPSEEK_API_KEY = 'test-search-key';
+  t.after(() => {
+    if (previousKey === undefined) delete process.env.DEEPSEEK_API_KEY;
+    else process.env.DEEPSEEK_API_KEY = previousKey;
+  });
+  const sourceUrl = 'https://example.com/docs';
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (url.endsWith('/search')) {
+      assert.equal(JSON.parse(options.body).query, '官方文档');
+      return Response.json({ results: [{ title: '文档', url: sourceUrl, summary: '摘要' }] });
+    }
+    assert.equal(url, 'https://api.deepseek.com/v1/tools/fetch');
+    assert.deepEqual(JSON.parse(options.body), { url: sourceUrl });
+    return Response.json({ title: '文档', content: '# 网页正文' });
+  });
+  let calls = 0;
+  t.mock.method(client.chat.completions, 'create', async (request) => {
+    assert.ok(request.tools.some((tool) => tool.function.name === 'search_web'));
+    assert.ok(request.tools.some((tool) => tool.function.name === 'fetch_page'));
+    calls += 1;
+    const step = calls;
+    if (step > 1) {
+      const result = JSON.parse(request.messages.filter((item) => item.role === 'tool').at(-1).content);
+      assert.equal(result.success, true);
+      if (step === 2) assert.equal(result.data.results[0].url, sourceUrl);
+      else assert.equal(result.data.content, '# 网页正文');
+    }
+    return (async function* () {
+      if (step < 3) yield { choices: [{ delta: { tool_calls: [{
+        index: 0, id: `web-${step}`, type: 'function',
+        function: {
+          name: step === 1 ? 'search_web' : 'fetch_page',
+          arguments: JSON.stringify(step === 1 ? { query: '官方文档' } : { url: sourceUrl }),
+        },
+      }] } }] };
+      else yield { choices: [{ delta: { content: `参考[文档](${sourceUrl})` } }] };
+    })();
+  });
+  const events = [];
+  const context = [{ role: 'system', content: 'test' }];
+  await chat('查阅文档', (event) => events.push(event), context, 'C:/test', [], '', {
+    modelConfig: { model: 'any-tool-calling-model', contextLimit: 8192 },
+  });
+  assert.equal(calls, 3);
+  assert.deepEqual(events.filter((item) => item.event === 'tool_start').map((item) => item.data.name),
+    ['search_web', 'fetch_page']);
+  assert.ok(events.filter((item) => item.event === 'tool_end').every(
+    (item) => item.data.status === 'succeeded',
+  ));
+  assert.equal(context.at(-1).content, `参考[文档](${sourceUrl})`);
+});
+
 test('动态模型及强度贯穿工具循环，并传回推理内容；无 effort 时不配置', async () => {
   const originalCreate = client.chat.completions.create;
   const originalTool = functionMap.get_file_list;

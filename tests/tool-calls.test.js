@@ -30,6 +30,49 @@ import {
 
 after(() => connection.end());
 
+test('重连先补齐正文，再发送工具快照，使位置可一次性恢复', async (t) => {
+  t.mock.method(connection, 'query', async () => [{ affectedRows: 1 }]);
+  let finish;
+  const gate = new Promise((resolve) => { finish = resolve; });
+  const state = startChatStream({
+    messageId: 99887766,
+    sessionId: 99887766,
+    run: async (send) => {
+      send({ event: 'text', data: '先看。' });
+      send({ event: 'tool_start', data: { toolCallId: 'restore-a', name: 'get_file_content', status: 'running' } });
+      send({ event: 'text', data: '再改。' });
+      send({ event: 'tool_start', data: { toolCallId: 'restore-b', name: 'upsert_file', status: 'running' } });
+      await gate;
+      return {};
+    },
+  });
+  try {
+    await new Promise((resolve) => setImmediate(resolve));
+    for (const offset of [0, 3, 6]) {
+      const received = [];
+      await subscribeChatStream({
+        messageId: state.messageId,
+        account: 'restore-test',
+        offset,
+        initialSession: { account: 'restore-test', status: 'streaming' },
+        res: {
+          writableEnded: false,
+          write(value) { received.push(JSON.parse(value.slice(6))); },
+          on() {},
+          end() { this.writableEnded = true; },
+        },
+      });
+      assert.deepEqual(received.map((event) => event.event), offset < 6 ? ['text', 'tool_snapshot'] : ['tool_snapshot']);
+      const snapshot = received.at(-1).data;
+      assert.deepEqual(snapshot.tools.map((tool) => tool.textOffset), [3, 6]);
+      if (offset < 6) assert.equal(received[0].data, '先看。再改。'.slice(offset));
+    }
+  } finally {
+    finish();
+    await state.completion;
+  }
+});
+
 test('失败 JSON 不当作成功；中断后的未完成记录校准终态', () => {
   assert.equal(
     toolResultStatus('{"success":false,"message":"写入失败"}'),
@@ -387,9 +430,10 @@ test(
         account: 'tool-owner',
         res: response,
       });
-      assert.equal(received[0].event, 'tool_snapshot');
-      assert.equal(received[0].data.tools[0].textOffset, 3);
-      assert.equal(received[1].data, '先看。');
+      assert.equal(received[0].event, 'text');
+      assert.equal(received[0].data, '先看。');
+      assert.equal(received[1].event, 'tool_snapshot');
+      assert.equal(received[1].data.tools[0].textOffset, 3);
       finish();
       await state.completion;
       assert.equal(getActiveStream(9998002), undefined);
@@ -437,7 +481,7 @@ test(
       const firstStream = await fetch(streamUrl, { headers: streamHeaders, signal: firstController.signal });
       assert.equal(firstStream.status, 200);
       const firstChunk = await firstStream.body.getReader().read();
-      assert.match(new TextDecoder().decode(firstChunk.value), /tool_snapshot/);
+      assert.match(new TextDecoder().decode(firstChunk.value), /"event":"text"/);
       firstController.abort();
       await disconnected.toolPersistence;
       assert.equal((await store.list(9998004, 'tool-owner')).tools[0].status, 'running');

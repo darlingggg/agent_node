@@ -8,6 +8,7 @@ import {
   writeFileContent,
 } from '../../file/index.js';
 import { markProjectFileActivity } from '../../utils/activity.js';
+import { fetchPageTool, searchWebTool } from './web-tools.js';
 import {
   createImageGenerationTask,
   waitForStoredImageGenerationTask,
@@ -140,6 +141,8 @@ export async function generateImageTool(args, runtime = {}) {
 }
 
 export const functionMap = {
+  search_web: searchWebTool,
+  fetch_page: fetchPageTool,
   get_file_list: getFileListTool,
   get_file_content: getFileContentTool,
   write_file_content: writeFileContentTool,
