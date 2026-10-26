@@ -5,6 +5,7 @@ import { describeImage } from './media/image-desc.js';
 import { buildSystemPrompt, message } from './prompt/prompt.js';
 import { functionMap } from './tools/tool-handlers.js';
 import { tools } from './tools/tool-definitions.js';
+import { canUseTool } from './tools/web-search-policy.js';
 import { parseToolResult, toolResultStatus } from '../toolCalls.js';
 import { modelRequestOptions } from '../models/config.js';
 import {
@@ -37,7 +38,7 @@ async function analyzeImages(imageUrls, prompt, userMessage, onEvent, tracker, s
   return response;
 }
 
-async function streamModelResponse(context, tracker, signal, onEvent, modelConfig) {
+async function streamModelResponse(context, tracker, signal, onEvent, modelConfig, webSearchEnabled) {
   await compressContext(context, tracker, signal, onEvent, modelConfig);
   const messages = toApiMessages(context);
   const fallbackPromptTokens = countContextTokens(messages);
@@ -45,7 +46,7 @@ async function streamModelResponse(context, tracker, signal, onEvent, modelConfi
     {
       ...modelRequestOptions(modelConfig),
       messages,
-      tools,
+      tools: tools.filter((tool) => canUseTool(tool.function.name, webSearchEnabled)),
       tool_choice: 'auto',
       stream: true,
       stream_options: { include_usage: true },
@@ -148,6 +149,8 @@ async function executeToolCalls({
       });
       throwIfAborted(signal);
 
+      if (!canUseTool(name, toolContext.webSearchEnabled)) throw new Error('联网搜索未开启，无法搜索或读取网页');
+
       const result = await handler(args, {
         ...toolContext,
         assistantSessionId,
@@ -244,6 +247,7 @@ async function runChat({
     signal,
     onEvent,
     modelConfig,
+    toolContext.webSearchEnabled,
   );
   if (toolCalls.length > 0) {
     await executeToolCalls({
@@ -317,7 +321,8 @@ export async function chat(
   prompt = '',
   options = {},
 ) {
-  if (context[0]?.role === 'system') context[0].content = buildSystemPrompt(projectDirPath);
+  const webSearchEnabled = options.webSearchEnabled === true;
+  if (context[0]?.role === 'system') context[0].content = buildSystemPrompt(projectDirPath, webSearchEnabled);
   const modelConfig = options.modelConfig;
   modelRequestOptions(modelConfig);
   const tracker = createUsageTracker(context);
@@ -336,7 +341,7 @@ export async function chat(
       appendUserMessage: true,
       userSessionId: options.userSessionId,
       assistantSessionId: options.assistantSessionId,
-      toolContext: options.toolContext || {},
+      toolContext: { ...options.toolContext, webSearchEnabled },
       modelConfig,
     });
     return buildUsageResult(tracker, context, modelConfig);

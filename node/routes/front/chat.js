@@ -84,6 +84,10 @@ router.post('/chat/stream', authJWT, async (req, res) => {
   const { prompt, projectId, conversationId, title, imageUrls = [] } = req.body;
   if (!prompt) return res.cc(1, '发送消息不能为空');
   if (!projectId) return res.cc(1, '操作项目不能为空');
+  if (req.body.webSearchEnabled !== undefined && typeof req.body.webSearchEnabled !== 'boolean') {
+    return res.cc(1, '联网搜索开关必须为布尔值');
+  }
+  const webSearchEnabled = req.body.webSearchEnabled === true;
 
   let context = message.map((item) => ({ ...item }));
   try {
@@ -163,6 +167,7 @@ router.post('/chat/stream', authJWT, async (req, res) => {
           prompt,
           {
             modelConfig,
+            webSearchEnabled,
             signal,
             userSessionId: userSession.id,
             assistantSessionId: assistantSession.sessionId,

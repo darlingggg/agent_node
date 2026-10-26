@@ -6,6 +6,71 @@ import { compressContext } from '../node/openai/context/context-compression.js';
 import { createUsageTracker } from '../node/openai/context/usage.js';
 import { functionMap } from '../node/openai/tools/tool-handlers.js';
 
+test('联网默认关闭，只有布尔 true 才开放工具；未授权调用不执行处理函数', async (t) => {
+  let handled = 0;
+  for (const name of ['search_web', 'fetch_page']) {
+    t.mock.method(functionMap, name, async (_args, runtime) => {
+      assert.equal(runtime.webSearchEnabled, true);
+      handled += 1;
+      return '{"success":true,"data":[]}';
+    });
+  }
+  const create = t.mock.method(client.chat.completions, 'create');
+  for (const enabled of [undefined, false, 'true', true]) {
+    const before = handled;
+    const allowed = enabled === true;
+    let calls = 0;
+    create.mock.mockImplementation(async (request) => {
+      const names = request.tools.map((tool) => tool.function.name);
+      assert.equal(names.includes('search_web'), allowed);
+      assert.equal(names.includes('fetch_page'), allowed);
+      assert.ok(names.includes('get_file_content'));
+      assert.match(request.messages[0].content, allowed ? /联网搜索已开启/ : /联网搜索未开启/);
+      calls += 1;
+      return (async function* () {
+        if (calls === 1) yield { choices: [{ delta: { tool_calls: ['search_web', 'fetch_page'].map((name, index) => ({
+          index, id: `web-${index}`, type: 'function', function: { name, arguments: '{}' },
+        })) } }] };
+        else yield { choices: [{ delta: { content: '结束' } }] };
+      })();
+    });
+    const events = [];
+    await chat('查阅网页', (event) => events.push(event), [{ role: 'system', content: '' }], '', [], '', {
+      modelConfig: { model: 'test', contextLimit: 8192 },
+      webSearchEnabled: enabled,
+      // 运行上下文不能覆盖当前请求的开关。
+      toolContext: { webSearchEnabled: true },
+    });
+    assert.equal(calls, 2);
+    assert.equal(handled - before, allowed ? 2 : 0);
+    assert.equal(events.filter((event) => event.event === 'tool_error').length, allowed ? 0 : 2);
+  }
+});
+
+test('不同会话并发请求的联网开关互不影响', async (t) => {
+  const requests = new Map();
+  const invoked = [];
+  t.mock.method(functionMap, 'search_web', async (args) => {
+    invoked.push(args.query);
+    return '{"success":true}';
+  });
+  t.mock.method(client.chat.completions, 'create', async (request) => {
+    assert.equal(request.tools.some((tool) => tool.function.name === 'search_web'), request.model === 'online');
+    const count = (requests.get(request.model) ?? 0) + 1;
+    requests.set(request.model, count);
+    return (async function* () {
+      if (count === 1) yield { choices: [{ delta: { tool_calls: [{ index: 0, id: request.model, type: 'function', function: {
+        name: 'search_web', arguments: JSON.stringify({ query: request.model }),
+      } }] } }] };
+      else yield { choices: [{ delta: { content: '完成' } }] };
+    })();
+  });
+  await Promise.all([true, false].map((enabled) => chat('查询', () => {}, [{ role: 'system', content: '' }], '', [], '', {
+    modelConfig: { model: enabled ? 'online' : 'offline', contextLimit: 8192 }, webSearchEnabled: enabled,
+  })));
+  assert.deepEqual(invoked, ['online']);
+});
+
 test('网页工具通过真实处理函数完成搜索、读取和回答，沿用工具事件与上下文', async (t) => {
   const previousKey = process.env.DEEPSEEK_API_KEY;
   process.env.DEEPSEEK_API_KEY = 'test-search-key';
@@ -50,6 +115,7 @@ test('网页工具通过真实处理函数完成搜索、读取和回答，沿�
   const context = [{ role: 'system', content: 'test' }];
   await chat('查阅文档', (event) => events.push(event), context, 'C:/test', [], '', {
     modelConfig: { model: 'any-tool-calling-model', contextLimit: 8192 },
+    webSearchEnabled: true,
   });
   assert.equal(calls, 3);
   assert.deepEqual(events.filter((item) => item.event === 'tool_start').map((item) => item.data.name),

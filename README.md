@@ -123,6 +123,10 @@ QQ / 微信回调地址和回跳域名需要与部署域名、第三方平台登
 - `search_web({ query, count? })`：搜索词为 1-128 个 Unicode 字符，默认返回 5 条，最多 10 条；返回标题、链接、摘要、站点及可用的发布时间，无结果也视为搜索成功。
 - `fetch_page({ url, maxChars? })`：读取 HTTP/HTTPS 网页，返回来源链接、标题和 Markdown 正文；默认最多 20000 个字符，可设为 1000-50000，截断时返回 `truncated: true` 和 `originalLength`。
 
+聊天输入框的“联网搜索”默认关闭，设置按账号、项目和会话保存在浏览器 localStorage 中，不写数据库。首条消息创建正式会话后，前端迁移草稿开关；生成期间不能切换。`POST /chat/stream` 每次携带布尔值 `webSearchEnabled`，后端只有收到 `true` 才提供和执行 `search_web`、`fetch_page`，缺省为关闭，且该值贯穿当前回复的所有模型轮次。
+
+固定系统提示词按项目路径在服务进程内缓存，首次获取后直接复用；每轮只在末尾拼接当前联网状态，不重新读取提示词文件。修改项目或默认提示词文件后，需要重启服务使新内容生效。
+
 服务端设置 `DEEPSEEK_API_KEY` 后重启即可使用，无需切换聊天模型或安装额外依赖。两个工具分别请求 `https://api.deepseek.com/v1/tools/search` 和 `/v1/tools/fetch`，使用独立的 DeepSeek 凭据，不复用聊天模型的 `baseURL` 或密钥。请求 30 秒超时，停止生成会取消正在执行的请求；失败结果采用 `{ success: false, message, data: null }`。Search / Fetch 按调用次数单独计费，不计入现有模型 Token 用量，具体限制与计费见 [DeepSeek 官方文档](https://api-docs.deepseek.com/zh-cn/guides/search/)。
 
 ## 本地启动
