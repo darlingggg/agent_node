@@ -1,1 +1,1 @@
-export { buildCommand, deleteOnlineVersion } from './deploy/deployment.js';
+export { projectBuilds } from './build/index.js';

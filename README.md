@@ -227,6 +227,8 @@ pnpm test
 
 前端工作台的 WebContainer 预览运行在浏览器中；“构建部署”则由本服务在项目目录执行安装、构建和 Cloudflare Pages 发布，两者使用不同的运行环境。部署后的后端进程需要持续运行，以提供接口、托管生成任务和执行定时同步。
 
+WebContainer 失败时，工作台可自动使用 Cloudflare 兼容预览。上线前执行 `pnpm db:migrate:builds`，后端按单进程运行；可通过 `BUILD_CACHE_ROOT` 指定构建缓存目录。预览复用依赖和产物，多次更新只保留下一次最新目标，不产生正式快照。任务调度、接口、缓存和验证方式见 [兼容预览实现说明](docs/preview-builds.md)。
+
 ## 对话工具过程
 
 前后端一起更新后运行 `pnpm db:migrate:tools`，创建可重复迁移的 `message_tool_calls` 表。工具事件带独立调用 ID，参数、结果与开始顺序关联到助手消息；并行调用不会按名称或最近一次调用猜测匹配。

@@ -1,4 +1,5 @@
 import connection from '../Mysql/index.js';
+import path from 'node:path';
 import { getProjectTempFiles, getFileContent, getFileBytes } from './file/index.js';
 import { countFileLines } from './file/index.js';
 import { getCurrentProjectTemplateVersion } from './project.js';
@@ -12,8 +13,9 @@ export const addSnapshot = async (
   user,
   type = 0,
   tempVersion = null,
+  sourceDir = dirPath,
 ) => {
-  const files = await getProjectTempFiles(dirPath);
+  const files = await getProjectTempFiles(sourceDir);
   const snapshotNum = await getSnapshotNum(projectId, user, type);
   if (snapshotNum >= 5) throw new Error('快照数量不能超过5个，请删除旧版本快照');
 
@@ -28,7 +30,7 @@ export const addSnapshot = async (
   const snapList = [];
   for (const file of files) {
     const filePath = file.path;
-    const fileContent = await getFileContent(filePath, dirPath);
+    const fileContent = await getFileContent(filePath, sourceDir);
     const bytes = (await getFileBytes(filePath)).size;
     const length = await countFileLines(filePath);
     snapList.push({
@@ -36,7 +38,7 @@ export const addSnapshot = async (
       account: user.account,
       version,
       desc: desc || '',
-      filePath,
+      filePath: path.join(dirPath, path.relative(sourceDir, filePath)),
       fileContent,
       bytes,
       length,

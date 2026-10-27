@@ -1,6 +1,7 @@
 import { spawn } from 'child_process';
 import { createRequire } from 'module';
 import { CLOUDFLARE_ACCOUNT_ID, CLOUDFLARE_API_TOKEN } from '../../key.js';
+import { buildEnvironment } from './build/environment.js';
 
 const require = createRequire(import.meta.url);
 const WRANGLER_CLI_PATH = require.resolve('wrangler');
@@ -10,23 +11,6 @@ export const INSTALL_TIMEOUT_MS = 10 * 60 * 1000;
 export const BUILD_TIMEOUT_MS = 5 * 60 * 1000;
 export const DEPLOY_TIMEOUT_MS = 5 * 60 * 1000;
 export const CLOUDFLARE_QUERY_TIMEOUT_MS = 60 * 1000;
-
-function getChildEnv() {
-  const env = {
-    ...process.env,
-    CLOUDFLARE_API_TOKEN,
-    CLOUDFLARE_ACCOUNT_ID,
-  };
-  if (!/--max-old-space-size(?:=|\s)/.test(env.NODE_OPTIONS || '')) {
-    const configuredSize = Number.parseInt(process.env.BUILD_MAX_OLD_SPACE_SIZE || '', 10);
-    const maxOldSpaceSize =
-      Number.isInteger(configuredSize) && configuredSize >= 128 && configuredSize <= 4096
-        ? configuredSize
-        : 512;
-    env.NODE_OPTIONS = `${env.NODE_OPTIONS || ''} --max-old-space-size=${maxOldSpaceSize}`.trim();
-  }
-  return env;
-}
 
 function createOutputCollector(maxBytes = COMMAND_MAX_BUFFER) {
   const chunks = [];
@@ -78,17 +62,23 @@ function terminateProcessTree(child) {
 
 export function execCommand(file, args, projectPath, options = {}) {
   return new Promise((resolve) => {
-    const { encoding = 'utf-8', timeout = BUILD_TIMEOUT_MS } = options;
+    const { encoding = 'utf-8', timeout = BUILD_TIMEOUT_MS, signal, env = buildEnvironment() } = options;
+    if (signal?.aborted) {
+      resolve({ success: false, code: 'ABORT_ERR', timedOut: false, stdout: '', stderr: '任务已取消' });
+      return;
+    }
     const stdout = createOutputCollector();
     const stderr = createOutputCollector();
     let timedOut = false;
     let spawnError = null;
     let forceKillTimer = null;
+    let stopping = false;
     const child = spawn(file, args, {
       cwd: projectPath,
-      env: getChildEnv(),
+      env,
       detached: process.platform !== 'win32',
       windowsHide: true,
+      windowsVerbatimArguments: options.windowsVerbatimArguments,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -98,8 +88,9 @@ export function execCommand(file, args, projectPath, options = {}) {
       spawnError = error;
     });
 
-    const timer = setTimeout(() => {
-      timedOut = true;
+    const stop = () => {
+      if (stopping) return;
+      stopping = true;
       terminateProcessTree(child);
       if (process.platform !== 'win32' && child.pid) {
         forceKillTimer = setTimeout(() => {
@@ -111,17 +102,24 @@ export function execCommand(file, args, projectPath, options = {}) {
         }, 5000);
         forceKillTimer.unref?.();
       }
+    };
+    const onAbort = () => stop();
+    signal?.addEventListener('abort', onAbort, { once: true });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stop();
     }, timeout);
     timer.unref?.();
 
-    child.on('close', (code, signal) => {
+    child.on('close', (code, exitSignal) => {
       clearTimeout(timer);
+      signal?.removeEventListener('abort', onAbort);
       if (forceKillTimer) clearTimeout(forceKillTimer);
       const stderrText = stderr.read(encoding);
       resolve({
-        success: !spawnError && !timedOut && code === 0,
-        code: timedOut ? 'ETIMEDOUT' : spawnError?.code || code,
-        signal,
+        success: !spawnError && !timedOut && !signal?.aborted && code === 0,
+        code: signal?.aborted ? 'ABORT_ERR' : timedOut ? 'ETIMEDOUT' : spawnError?.code || code,
+        signal: exitSignal,
         timedOut,
         stdout: stdout.read(encoding),
         stderr: spawnError ? `${stderrText}\n${spawnError.message}`.trim() : stderrText,
@@ -130,18 +128,19 @@ export function execCommand(file, args, projectPath, options = {}) {
   });
 }
 
-export function runPnpm(args, projectPath, timeout) {
+export function runPnpm(args, projectPath, timeout, options = {}) {
   if (process.platform === 'win32') {
     return execCommand(
       process.env.ComSpec || 'cmd.exe',
-      ['/d', '/s', '/c', ['pnpm', ...args].join(' ')],
+      ['/d', '/s', '/c', ['pnpm', ...args.map((arg) => `"${arg}"`)].join(' ')],
       projectPath,
-      { timeout },
+      { ...options, timeout, windowsVerbatimArguments: true },
     );
   }
-  return execCommand('pnpm', args, projectPath, { timeout });
+  return execCommand('pnpm', args, projectPath, { ...options, timeout });
 }
 
-export function runWrangler(args, projectPath, timeout = CLOUDFLARE_QUERY_TIMEOUT_MS) {
-  return execCommand(process.execPath, [WRANGLER_CLI_PATH, ...args], projectPath, { timeout });
+export function runWrangler(args, projectPath, timeout = CLOUDFLARE_QUERY_TIMEOUT_MS, options = {}) {
+  const env = { ...buildEnvironment(), CLOUDFLARE_API_TOKEN, CLOUDFLARE_ACCOUNT_ID };
+  return execCommand(process.execPath, [WRANGLER_CLI_PATH, ...args], projectPath, { ...options, timeout, env });
 }

@@ -7,6 +7,8 @@ import { startStorageMetricsScheduler } from './cos/storageMetrics.js';
 import { startModelSyncScheduler } from './models/scheduler.js';
 import { recoverPendingImageGenerationTasks } from './imageGeneration.js';
 import { recoverOrphanedChatStreams } from './chatStream.js';
+import { projectBuilds } from './exec/build/index.js';
+import { clearAbandonedBuildInputs } from './exec/build/project-input.js';
 
 const PORT = process.env.PORT || 5000;
 const app = express();
@@ -35,6 +37,12 @@ try {
   await recoverOrphanedChatStreams();
 } catch (error) {
   console.error('[startup] 收束失联聊天流失败:', error);
+}
+try {
+  await projectBuilds.recover();
+  await clearAbandonedBuildInputs();
+} catch (error) {
+  console.error('[startup] 恢复构建任务失败，请运行 pnpm db:migrate:builds:', error.message);
 }
 try {
   await recoverPendingImageGenerationTasks();

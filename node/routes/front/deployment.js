@@ -1,50 +1,18 @@
 import express from 'express';
 import authJWT from '../../middleware/authJWT.js';
-import { buildCommand, deleteOnlineVersion } from '../../exec/index.js';
+import buildRouter from './build.js';
 import {
-  buildProject,
   getAllTemplateVersionFiles,
   getCurrentProjectTemplateVersion,
   getLatestTemplateVersion,
-  getProjectInfo,
   updateProjectTemplateVersion,
 } from '../../project.js';
-import { addSnapshot, getCurrentVision } from '../../snapshot.js';
+import { getCurrentVision } from '../../snapshot.js';
 import { markUserActive } from '../../utils/activity.js';
-import { prepareSse, writeSse } from './sse.js';
 
 const router = express.Router();
 
-router.post('/project/build', authJWT, async (req, res) => {
-  const { dir, projectId } = req.body;
-  if (!dir) return res.cc(1, '项目根目录不能为空');
-  if (!projectId) return res.cc(1, '项目id不能为空');
-
-  prepareSse(res);
-  let clientClosed = false;
-  const send = (event) => {
-    if (!clientClosed) writeSse(res, event);
-  };
-  res.on('close', () => {
-    if (!res.writableEnded) clientClosed = true;
-  });
-
-  try {
-    const { link, deploymentId } = await buildCommand(dir, send);
-    const oldDeploymentId = (await getProjectInfo(projectId, req.user)).cloudflare_id;
-    const version = `构建${Math.random().toString(36).substring(2, 15)}`;
-    const { id: snapshotId } = await addSnapshot(projectId, version, dir, '', req.user);
-    await buildProject(projectId, link, snapshotId, deploymentId);
-    await markUserActive(req.user.id);
-    if (oldDeploymentId) await deleteOnlineVersion(dir, oldDeploymentId);
-    if (!clientClosed) res.end();
-  } catch (error) {
-    if (!clientClosed) {
-      send({ event: 'error', data: `错误信息: \n${error.message}` });
-      res.end();
-    }
-  }
-});
+router.use(buildRouter);
 
 router.get('/project/version', authJWT, async (req, res) => {
   if (!req.query.projectId) return res.cc(1, '项目id不能为空');
