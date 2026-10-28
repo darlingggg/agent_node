@@ -7,5 +7,8 @@ export function buildEnvironment(source = process.env) {
   env.NODE_OPTIONS = `--max-old-space-size=${heap}`;
   // 由服务端的依赖指纹判断是否需要安装，避免 pnpm run 隐式触发安装。
   env.pnpm_config_verify_deps_before_run = 'false';
+  // 限制原生工具的线程数；系统级配额仍负责整个进程组的 CPU 上限。
+  env.RAYON_NUM_THREADS = '1';
+  env.GOMAXPROCS = '1';
   return env;
 }

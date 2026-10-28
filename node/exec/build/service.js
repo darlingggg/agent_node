@@ -2,6 +2,7 @@ import { BuildScheduler } from './scheduler.js';
 import { buildTaskStore } from './task-store.js';
 import { captureProjectInput } from './project-input.js';
 import { runProjectBuild } from './pipeline.js';
+import { BUILD_PROFILE_VERSION } from './profile.js';
 
 /** 将持久化和输入副本准备与调度规则分离，便于独立测试。 */
 export function createBuildService({ store = buildTaskStore, capture = captureProjectInput,
@@ -30,7 +31,7 @@ export function createBuildService({ store = buildTaskStore, capture = capturePr
       lastReady: ready, latest };
   }
 
-  async function request(project, kind, user) {
+  async function request(project, kind, user, { force = false } = {}) {
     scheduler.assertCapacity(project.id, projectRequests.keys());
     return serialized(project.id, async () => {
       const existing = scheduler.find(project.id, kind)[0];
@@ -47,8 +48,12 @@ export function createBuildService({ store = buildTaskStore, capture = capturePr
             await store.save({ ...cached, requestedAt: scheduler.nextRequest() });
             return null;
           }
+          // 相同源码失败后不因重新打开页面继续重跑；显式刷新才绕过抑制。
+          if (!force && latest?.status === 'failed' && latest.revision === input.revision
+            && latest.builderVersion === BUILD_PROFILE_VERSION) return null;
         }
         const job = await scheduler.submit({ projectId: project.id, account: project.account, kind,
+          builderVersion: BUILD_PROFILE_VERSION,
           revision: input.revision, dispose: input.dispose,
           run: async (send, task) => {
             const result = await build({ projectId: project.id, input, kind, send });

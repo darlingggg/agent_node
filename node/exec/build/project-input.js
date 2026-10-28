@@ -4,8 +4,10 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 
-export const BUILD_CACHE_ROOT = path.resolve(process.env.BUILD_CACHE_ROOT || path.join(os.tmpdir(), 'agent-project-builds'));
-const EXCLUDED = new Set(['node_modules', 'dist', 'dist-ssr', '.git', '.vscode', '.preview-cache', 'coverage']);
+export const BUILD_CACHE_ROOT = path.resolve(process.env.BUILD_CACHE_ROOT || path.join(
+  process.platform === 'linux' ? path.join(os.homedir(), '.cache') : os.tmpdir(), 'agent-project-builds'));
+const EXCLUDED = new Set(['node_modules', 'dist', 'dist-ssr', '.git', '.vscode', '.preview-cache', 'coverage',
+  '.agent-build', '.agent-build-logs']);
 
 export function projectCacheRoot(projectId) {
   if (!Number.isSafeInteger(projectId) || projectId < 1) throw new Error('项目 id 无效');

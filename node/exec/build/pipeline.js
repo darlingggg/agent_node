@@ -4,13 +4,14 @@ import { runPnpm, runWrangler, INSTALL_TIMEOUT_MS, BUILD_TIMEOUT_MS, DEPLOY_TIME
 import { CF_PROJECT_NAME, assertPreviewBranch, extractDeployUrl, extractDeploymentIdByLink } from '../deploy/cloudflare.js';
 import { runBuildStep, formatDuration } from './build-step.js';
 import { dependencyRevision, prepareWorkspace, projectCacheRoot, pruneBuildArtifacts, readCacheJson } from './project-input.js';
+import { artifactRevision, writeBuildConfig } from './profile.js';
 
 const INSTALL_ARGS = ['install', '--no-frozen-lockfile', '--prefer-offline', '--child-concurrency=1',
   '--network-concurrency=4', '--config.optional=true', '--config.confirmModulesPurge=false'];
 const PREVIEW_HEADERS = '\n/*\n  Cross-Origin-Embedder-Policy: credentialless\n  Cross-Origin-Opener-Policy: same-origin\n  Cross-Origin-Resource-Policy: cross-origin\n';
 
 export function createBuildPipeline({ pnpm = runPnpm, wrangler = runWrangler,
-  validatePreviewBranch = assertPreviewBranch, previewTimeout = 180_000 } = {}) {
+  validatePreviewBranch = assertPreviewBranch, previewTimeout = 300_000 } = {}) {
   return async function build({ projectId, input, kind, send }) {
     const started = Date.now();
     const deadline = started + (kind === 'preview' ? previewTimeout : INSTALL_TIMEOUT_MS + BUILD_TIMEOUT_MS + DEPLOY_TIMEOUT_MS);
@@ -30,13 +31,15 @@ export function createBuildPipeline({ pnpm = runPnpm, wrangler = runWrangler,
 
     try {
       const root = projectCacheRoot(projectId);
+      const commandOptions = (stage) => ({ signal: controller.signal, stage, auditDirectory: root });
       send({ event: 'step', data: { key: 'prepare', title: '准备构建', status: 'running', message: '正在准备独立构建目录' } });
       if (kind === 'preview') {
         await validatePreviewBranch(`preview-p${projectId}`, { signal: controller.signal });
       }
       const artifacts = path.join(root, 'artifacts');
-      const distPath = path.join(artifacts, input.revision);
-      const buildMarker = path.join(artifacts, `${input.revision}.json`);
+      const artifact = artifactRevision(input.revision, kind);
+      const distPath = path.join(artifacts, artifact);
+      const buildMarker = path.join(artifacts, `${artifact}.json`);
       const cachedBuild = await readCacheJson(buildMarker);
       const hasIndex = await fs.stat(path.join(distPath, 'index.html')).then((stat) => stat.isFile(), () => false);
       if (!cachedBuild || !hasIndex) {
@@ -48,15 +51,16 @@ export function createBuildPipeline({ pnpm = runPnpm, wrangler = runWrangler,
         if (installed?.revision !== dependencies || !hasModules) {
           await fs.rm(dependencyFile, { force: true });
           await step('install', '安装依赖', () => pnpm(INSTALL_ARGS, workspace,
-            remaining(INSTALL_TIMEOUT_MS), { signal: controller.signal }));
+            remaining(INSTALL_TIMEOUT_MS), commandOptions('install')));
           await fs.writeFile(dependencyFile, JSON.stringify({ revision: dependencies }));
         } else {
           send({ event: 'step', data: { key: 'install', title: '安装依赖', status: 'done', message: '依赖未变化，复用已安装依赖' } });
         }
         await fs.rm(distPath, { recursive: true, force: true });
         await fs.mkdir(artifacts, { recursive: true });
-        await step('build', '构建项目', () => pnpm(['run', 'build', '--outDir', distPath], workspace,
-          remaining(BUILD_TIMEOUT_MS), { signal: controller.signal }));
+        const config = await writeBuildConfig(workspace, kind);
+        await step('build', '构建项目', () => pnpm(['run', 'build', '--config', config, '--outDir', distPath], workspace,
+          remaining(BUILD_TIMEOUT_MS), commandOptions('build')));
         await fs.access(path.join(distPath, 'index.html'));
         for (const name of ['_worker.js', 'functions']) {
           const exists = await fs.stat(path.join(distPath, name)).then(() => true, () => false);
@@ -67,7 +71,7 @@ export function createBuildPipeline({ pnpm = runPnpm, wrangler = runWrangler,
         send({ event: 'step', data: { key: 'install', title: '安装依赖', status: 'done', message: '已有构建产物，无需安装依赖' } });
         send({ event: 'step', data: { key: 'build', title: '构建项目', status: 'done', message: '复用成功构建产物' } });
       }
-      await pruneBuildArtifacts(projectId, input.revision);
+      await pruneBuildArtifacts(projectId, artifact);
 
       // 从受控的独立目录上传，避免读取生成项目中的部署配置和云函数。
       const uploadDirectory = path.join(root, 'upload');
@@ -92,13 +96,13 @@ export function createBuildPipeline({ pnpm = runPnpm, wrangler = runWrangler,
       const args = ['pages', 'deploy', uploadPath, `--project-name=${CF_PROJECT_NAME}`];
       if (kind === 'preview') args.push(`--branch=preview-p${projectId}`);
       const deployed = await step('deploy', kind === 'preview' ? '上传预览' : '部署上线', () =>
-        wrangler(args, uploadDirectory, remaining(DEPLOY_TIMEOUT_MS), { signal: controller.signal }));
+        wrangler(args, uploadDirectory, remaining(DEPLOY_TIMEOUT_MS), commandOptions('deploy')));
       const link = extractDeployUrl(deployed.stdout);
       if (!link) throw new Error('部署未返回有效访问链接，请重试');
       let deploymentId = null;
       if (kind === 'publish') {
         const listed = await wrangler(['pages', 'deployment', 'list', `--project-name=${CF_PROJECT_NAME}`, '--json'],
-          uploadDirectory, remaining(60_000), { signal: controller.signal });
+          uploadDirectory, remaining(60_000), commandOptions('deployment-list'));
         if (listed.success) deploymentId = extractDeploymentIdByLink(listed.stdout, link);
       }
       const duration = Date.now() - started;

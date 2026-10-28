@@ -13,6 +13,7 @@ const { createBuildService } = await import('../node/exec/build/service.js');
 const { buildEnvironment } = await import('../node/exec/build/environment.js');
 const { execCommand } = await import('../node/exec/process-runner.js');
 const { assertPreviewBranch } = await import('../node/exec/deploy/cloudflare.js');
+const { artifactRevision, BUILD_PROFILE_VERSION } = await import('../node/exec/build/profile.js');
 after(() => fs.rm(testRoot, { recursive: true, force: true }));
 
 const success = { success: true, code: 0, stdout: '', stderr: '' };
@@ -164,7 +165,37 @@ test('build environment strips business credentials and inherited executable NOD
     CLOUDFLARE_API_TOKEN: 'secret', JWT_SECRET: 'secret', MYSQL_PASSWORD: 'secret',
     OPENAI_API_KEY: 'secret', NODE_OPTIONS: '--require untrusted.js', BUILD_MAX_OLD_SPACE_SIZE: '512' });
   assert.deepEqual(env, { PATH: 'runtime', HOME: 'profile', HTTPS_PROXY: 'proxy', NODE_OPTIONS: '--max-old-space-size=512',
-    pnpm_config_verify_deps_before_run: 'false' });
+    pnpm_config_verify_deps_before_run: 'false', RAYON_NUM_THREADS: '1', GOMAXPROCS: '1' });
+});
+
+test('failed source is not rebuilt on reopen, explicit retry and changed source can run', async () => {
+  const root = await fixture('failure-guard');
+  const store = memoryStore();
+  let count = 0;
+  const service = createBuildService({ store, build: async () => { count++; throw new Error('resource limit'); } });
+  const project = { id: 18, account: 'owner', dir_path: root };
+  const run = async (options) => {
+    const job = await service.request(project, 'preview', {}, options);
+    if (job) await assert.rejects(job.completion, /resource limit/);
+    for (let i = 0; i < 100 && service.scheduler.active; i++) await tick();
+    return job;
+  };
+  await run();
+  assert.equal(await run(), null);
+  assert.equal(count, 1);
+  await run({ force: true });
+  assert.equal(count, 2);
+  await fs.writeFile(path.join(root, 'src/main.js'), 'changed');
+  await run();
+  assert.equal(count, 3);
+  assert.equal((await store.latest(project.id, 'preview')).builderVersion, BUILD_PROFILE_VERSION);
+});
+
+test('preview and publish artifacts use distinct versioned keys', () => {
+  const revision = 'a'.repeat(64);
+  assert.match(artifactRevision(revision, 'preview'), /^[a-f0-9]{64}$/);
+  assert.notEqual(artifactRevision(revision, 'preview'), artifactRevision(revision, 'publish'));
+  assert.notEqual(artifactRevision(revision, 'preview'), revision);
 });
 
 test('admission includes projects still capturing input, before a sixth project reads files', async () => {

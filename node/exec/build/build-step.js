@@ -39,6 +39,8 @@ export async function runBuildStep({ key, title, command, execute, send }) {
         message: `${title}失败`,
         error: trimOutput(errorMessage, 1000),
         code: result.code,
+        signal: result.signal,
+        resources: result.resources,
       },
     });
     send({
@@ -58,6 +60,7 @@ export async function runBuildStep({ key, title, command, execute, send }) {
     message: `${title}完成`,
     stdout: trimOutput(result.stdout),
     stderr: trimOutput(result.stderr),
+    resources: result.resources,
   };
   send({ event: 'step', data: step });
   send({ event: 'text', data: `✓ ${title}完成（耗时 ${durationText}）` });

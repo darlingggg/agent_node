@@ -41,9 +41,9 @@ export class BuildScheduler {
 
   view(job) {
     if (!job) return null;
-    const { id, projectId, account, kind, revision, status, phase, error, result,
+    const { id, projectId, account, kind, revision, builderVersion, status, phase, error, result,
       queuedAt, requestedAt, startedAt, completedAt } = job;
-    return { id, projectId, account, kind, revision, status, phase, error, result,
+    return { id, projectId, account, kind, revision, builderVersion, status, phase, error, result,
       queuedAt, requestedAt, startedAt, completedAt,
       queuePosition: status === 'queued' ? this.orderedQueue().indexOf(job) + 1 : 0 };
   }

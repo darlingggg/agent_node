@@ -23,19 +23,24 @@ test('real Vite builds for tool, 2D and 3D templates using existing dependency c
           JSON.stringify({ revision: await dependencyRevision(input.directory) }));
         let uploads = 0;
         const build = createBuildPipeline({ validatePreviewBranch: async () => {}, wrangler: async (args, cwd) => {
+          if (args[1] === 'deployment') return { success: true, code: 0, stdout: '[]', stderr: '' };
           uploads++;
-          assert.ok(args.includes(`--branch=preview-p${projectId}`));
           const html = await fs.readFile(path.join(cwd, 'dist/index.html'), 'utf8');
-          assert.match(html, /agent-preview-ready/);
+          if (args.includes(`--branch=preview-p${projectId}`)) assert.match(html, /agent-preview-ready/);
           assert.match(html, /assets\//);
           return { success: true, code: 0, stdout: `https://template-${index}.gen-agent.pages.dev`, stderr: '' };
         } });
         const result = await build({ projectId, input, kind: 'preview', send: () => {} });
         assert.equal(uploads, 1);
-        console.log(`${name}: ${result.durationText}`);
+        console.log(`${name} preview: ${result.durationText} (${result.distPath})`);
+        const published = await build({ projectId, input, kind: 'publish', send: () => {} });
+        assert.equal(uploads, 2);
+        assert.notEqual(result.distPath, published.distPath);
+        console.log(`${name} publish: ${published.durationText}`);
         await input.dispose();
       }
     } finally {
-      await fs.rm(root, { recursive: true, force: true });
+      if (process.env.BUILD_KEEP_ARTIFACTS === '1') console.log(`Retained artifacts: ${root}`);
+      else await fs.rm(root, { recursive: true, force: true });
     }
   });
