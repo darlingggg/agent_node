@@ -1,3 +1,4 @@
+/** 将毫秒耗时转换成日志和界面使用的 ms、s 或 m+s 文本。 */
 export function formatDuration(milliseconds) {
   if (milliseconds < 1000) return `${milliseconds}ms`;
   if (milliseconds < 60000) return `${(milliseconds / 1000).toFixed(1)}s`;
@@ -6,12 +7,19 @@ export function formatDuration(milliseconds) {
   return `${minutes}m${seconds}s`;
 }
 
+/** 限制持久化/展示的日志长度，保留更可能包含报错原因的尾部；不是子进程输出缓冲上限。 */
 export function trimOutput(text, maxLength = 2000) {
   if (!text) return '';
   if (text.length <= maxLength) return text;
   return `...(省略 ${text.length - maxLength} 字符)\n${text.slice(-maxLength)}`;
 }
 
+/**
+ * 包装单个安装/构建/部署步骤：发送开始事件，调用 execute，再发送完成或失败事件。
+ * key 是阶段标识，command 是展示文本，execute 返回 process-runner 的命令结果。
+ * send 来自 scheduler，用于更新任务阶段和通知订阅者；失败抛错使后续步骤停止。
+ * 成功返回原命令结果及 step 摘要，供 pipeline 汇总。
+ */
 export async function runBuildStep({ key, title, command, execute, send }) {
   const startedAt = Date.now();
   send({

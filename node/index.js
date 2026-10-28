@@ -40,6 +40,7 @@ try {
 }
 try {
   await projectBuilds.recover();
+  // 重启后原队列与回调已丢失：先标记任务中断，再清理输入副本；依赖/产物/成功链接保留。
   await clearAbandonedBuildInputs();
 } catch (error) {
   console.error('[startup] 恢复构建任务失败，请运行 pnpm db:migrate:builds:', error.message);

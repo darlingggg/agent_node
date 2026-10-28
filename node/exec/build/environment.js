@@ -1,4 +1,8 @@
-/** 仅保留运行时路径和网络配置，不继承业务凭据。 */
+/**
+ * 从后端环境挑选命令运行所需的路径、临时目录、语言和网络配置，返回新的环境对象。
+ * 安装/构建不继承业务凭据；只有 runWrangler 再额外加入 Cloudflare 凭据。
+ * 同时限制 Node 堆及原生工具线程数；整个进程组的内存/CPU 限制由 resource-policy 负责。
+ */
 export function buildEnvironment(source = process.env) {
   const allowed = /^(PATH|PATHEXT|SYSTEMROOT|WINDIR|COMSPEC|HOME|USERPROFILE|APPDATA|LOCALAPPDATA|TMP|TEMP|TMPDIR|PNPM_HOME|LANG|LC_ALL|HTTP_PROXY|HTTPS_PROXY|NO_PROXY|SSL_CERT_FILE|NODE_EXTRA_CA_CERTS)$/i;
   const env = Object.fromEntries(Object.entries(source).filter(([key]) => allowed.test(key)));

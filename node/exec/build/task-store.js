@@ -1,10 +1,13 @@
 import connection from '../../../Mysql/index.js';
 
+/** 兼容 MySQL 驱动将 JSON 字段返回为字符串或对象的两种情况。 */
 function parse(row) {
   return typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
 }
 
+/** 持久化任务状态和成功链接；不保存可执行回调，不承担内存队列调度。 */
 export const buildTaskStore = {
+  /** 按任务 ID 插入或更新 scheduler.view(job) 的状态快照，payload 保留完整可查询字段。 */
   async save(task) {
     await connection.query(
       `INSERT INTO project_build_tasks
@@ -17,6 +20,7 @@ export const buildTaskStore = {
     );
   },
 
+  /** 取用户最近请求的任务，按 requested_at 而非完成时间排序；无记录返回 null。 */
   async latest(projectId, kind) {
     const [rows] = await connection.query(
       'SELECT payload FROM project_build_tasks WHERE project_id = ? AND kind = ? ORDER BY requested_at DESC LIMIT 1',
@@ -25,6 +29,7 @@ export const buildTaskStore = {
     return rows.length ? parse(rows[0]) : null;
   },
 
+  /** 取成功预览；传 revision 时精确匹配源码版本，不传时取最近完成的成功版本。 */
   async ready(projectId, revision) {
     const params = [projectId];
     const filter = revision ? ' AND revision = ?' : '';
@@ -36,6 +41,7 @@ export const buildTaskStore = {
     return rows.length ? parse(rows[0]) : null;
   },
 
+  /** 重启后将遗留 queued/running 标为失败；内存回调已丢失，不能直接恢复执行，成功记录保留。 */
   async recover() {
     const [rows] = await connection.query(
       "SELECT payload FROM project_build_tasks WHERE status IN ('queued', 'running')",
