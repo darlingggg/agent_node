@@ -69,7 +69,7 @@ function terminateProcessTree(child) {
 /**
  * 最底层命令执行器：在 projectPath 启动 file/args，收集输出并等待 close 后返回命令结果。
  * options 可指定 env、timeout、AbortSignal、输出编码和 onStop（清理 systemd 单元）。
- * 命令失败/超时/取消以 { success: false, code, stdout, stderr, ... } 返回，由 build-step 转成异常。
+ * 命令失败/超时/取消以 { success: false, code, stdout, stderr, ... } 返回，由 pipeline.runCommand 转成异常。
  * 不会在超时触发时立即返回，需等待子进程关闭及 onStop 完成，避免过早释放构建槽。
  */
 export function execCommand(file, args, projectPath, options = {}) {

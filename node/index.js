@@ -7,7 +7,7 @@ import { startStorageMetricsScheduler } from './cos/storageMetrics.js';
 import { startModelSyncScheduler } from './models/scheduler.js';
 import { recoverPendingImageGenerationTasks } from './imageGeneration.js';
 import { recoverOrphanedChatStreams } from './chatStream.js';
-import { projectBuilds } from './exec/build/index.js';
+import { projectBuilds } from './exec/build/service.js';
 import { clearAbandonedBuildInputs } from './exec/build/project-input.js';
 
 const PORT = process.env.PORT || 5000;
@@ -40,7 +40,7 @@ try {
 }
 try {
   await projectBuilds.recover();
-  // 重启后原队列与回调已丢失：先标记任务中断，再清理输入副本；依赖/产物/成功链接保留。
+  // 重启后原内存队列已丢失：先标记任务中断，再清理输入副本；依赖/产物/成功链接保留。
   await clearAbandonedBuildInputs();
 } catch (error) {
   console.error('[startup] 恢复构建任务失败，请运行 pnpm db:migrate:builds:', error.message);

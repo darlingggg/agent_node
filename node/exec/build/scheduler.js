@@ -1,14 +1,49 @@
 import { randomUUID } from 'node:crypto';
+import { removeProjectInput } from './project-input.js';
+
+/**
+ * @typedef {Object} BuildJob
+ * @property {string} id 任务 UUID；同一次排队更新保留 ID。
+ * @property {number} projectId 项目 ID。
+ * @property {string} account 所属账号。
+ * @property {'preview'|'publish'} kind 兼容预览或正式发布。
+ * @property {string} revision 源码指纹。
+ * @property {string} builderVersion 构建策略版本。
+ * @property {Object} project 已校验归属的项目资料，仅在内存中供发布收尾使用。
+ * @property {Object} user 发起用户，仅在内存中供发布收尾使用。
+ * @property {{directory: string, revision: string}} source 固定源码副本，任务结束后删除。
+ * @property {'queued'|'running'|'ready'|'failed'|'superseded'} status 任务整体状态。
+ * @property {string} phase 当前步骤，如 install/build/deploy。
+ * @property {string} queuedAt 入队时间（ISO 字符串）。
+ * @property {number} requestedAt 严格递增的请求顺序；复用、替换时更新。
+ * @property {string|null} startedAt 开始执行时间。
+ * @property {string|null} completedAt 结束时间。
+ * @property {string} error 失败信息。
+ * @property {Object|null} result pipeline 的完整结果，预览链接在 result.link。
+ * @property {Array<Object>} events 最近 40 条进度事件，供 SSE 订阅重放。
+ * @property {Set<Function>} listeners SSE 订阅者。
+ * @property {Promise<void>} persistence 顺序写入数据库的 Promise 链。
+ * @property {Promise<Object|null>} completion 最终结果；丢弃任务时返回 null。
+ * @property {Function} resolve 完成 completion。
+ * @property {Function} reject 拒绝 completion。
+ * @property {ReturnType<typeof setTimeout>|null} timer 预览排队期限，不是执行期限。
+ */
 
 /**
  * 进程内构建调度器：正式发布和预览共用一个执行槽，排队中的预览仅保留最新输入。
- * 只管理任务生命周期；实际工作通过 service 传入的 job.run 执行，数据库通过 save 回调写入。
+ * 只管理任务生命周期；实际工作调用 ProjectBuildService.executeBuild，数据库调用 store.save。
  * queue/active 不跨进程共享，因此不能据此协调多个后端实例。
  */
 export class BuildScheduler {
-  /** save 接收可序列化的任务状态；容量按项目数计算，queueTimeout 只限制预览排队时间。 */
-  constructor({ save = async () => {}, maxProjects = 5, queueTimeout = 60_000 } = {}) {
-    this.save = save;
+  /**
+   * service 执行构建，store 保存状态；queueTimeout 只限制预览排队。
+   * @param {{service: import('./service.js').ProjectBuildService,
+   *   store: typeof import('./task-store.js').buildTaskStore,
+   *   maxProjects?: number, queueTimeout?: number}} options
+   */
+  constructor({ service, store, maxProjects = 5, queueTimeout = 60_000 }) {
+    this.service = service;
+    this.store = store;
     this.maxProjects = maxProjects;
     this.queueTimeout = queueTimeout;
     this.active = null; // 正在执行的唯一任务；直到执行收尾和输入清理后才释放。
@@ -48,7 +83,7 @@ export class BuildScheduler {
     }
   }
 
-  /** 提取接口/数据库可用的状态，排除 run、dispose、Promise、监听器等内存对象。 */
+  /** 提取接口/数据库可用的状态，排除源码目录、用户资料、Promise 和监听器等内部对象。 */
   view(job) {
     if (!job) return null;
     const { id, projectId, account, kind, revision, builderVersion, status, phase, error, result,
@@ -76,7 +111,7 @@ export class BuildScheduler {
    */
   record(job, event) {
     const snapshot = this.view(job);
-    job.persistence = job.persistence.then(() => this.save(snapshot));
+    job.persistence = job.persistence.then(() => this.store.save(snapshot));
     void job.persistence.catch(() => {});
     if (event) this.emit(job, event);
     return job.persistence;
@@ -99,7 +134,7 @@ export class BuildScheduler {
     try {
       await this.record(job);
     } finally {
-      await job.dispose().catch((error) => console.error('[build-queue] 清理失败:', error.message));
+      await removeProjectInput(job.source).catch((error) => console.error('[build-queue] 清理失败:', error.message));
       job.resolve(null);
     }
   }
@@ -113,19 +148,19 @@ export class BuildScheduler {
   }
 
   /**
-   * 接收 service 提供的任务描述：revision 标识源码，run(send, job) 执行工作，dispose 清理副本。
+   * 接收 service 提供的任务数据：project/user/source 等字段由 createJob 集中定义。
    * 优先复用已有任务，其次替换排队输入，最后创建新任务；不等待任务执行结束。
    * 返回 job；job.completion 才表示构建及正式发布收尾的最终结果。
    */
-  submit(input) {
+  submit(request) {
     // 串行修改调度状态，避免多个异步请求交错操作同一个任务或队列。
     return this.locked(async () => {
-      const matches = this.find(input.projectId, input.kind);
+      const matches = this.find(request.projectId, request.kind);
       const running = matches.find((job) => job.status === 'running');
       const queued = matches.find((job) => job.status === 'queued');
       // 重复正式发布复用现有任务；预览仅复用源码指纹相同的任务。
-      const reusable = input.kind === 'publish' ? matches[0]
-        : matches.find((job) => job.revision === input.revision);
+      const reusable = request.kind === 'publish' ? matches[0]
+        : matches.find((job) => job.revision === request.revision);
       const requestedAt = this.nextRequest();
 
       if (reusable) {
@@ -133,43 +168,39 @@ export class BuildScheduler {
         if (reusable === running && queued) await this.discard(queued);
         reusable.requestedAt = requestedAt;
         // 已有任务持有自己的输入副本，本次新准备的副本可以直接删除。
-        await input.dispose();
+        await removeProjectInput(request.source);
         await this.record(reusable);
         return reusable;
       }
       if (queued) {
-        // 替换内容及其执行、清理回调，保留任务编号、排队位置和原超时计时器。
-        await queued.dispose();
-        Object.assign(queued, { revision: input.revision, run: input.run,
-          dispose: input.dispose, requestedAt });
+        // 替换固定源码与发布资料，保留任务编号、排队位置和原超时计时器。
+        await removeProjectInput(queued.source);
+        Object.assign(queued, {
+          revision: request.revision, source: request.source,
+          project: request.project, user: request.user, requestedAt,
+        });
         await this.record(queued);
         return queued;
       }
 
       // 新建任务前检查项目容量；拒绝接单时也要清理本次输入副本。
       try {
-        this.assertCapacity(input.projectId);
+        this.assertCapacity(request.projectId);
       } catch (error) {
-        await input.dispose();
+        await removeProjectInput(request.source);
         throw error;
       }
-      const job = { ...input, id: randomUUID(), status: 'queued', phase: 'queue',
-        queuedAt: new Date().toISOString(), requestedAt, startedAt: null, completedAt: null,
-        error: '', result: null, events: [], listeners: new Set(), persistence: Promise.resolve() };
-      // 提交只返回任务对象，调用方通过 completion 等待实际执行结果。
-      job.completion = new Promise((resolve, reject) => { job.resolve = resolve; job.reject = reject; });
-      // 预先处理未被订阅的拒绝，原 completion 仍会向等待它的调用方抛出错误。
-      void job.completion.catch(() => {});
+      const job = this.createJob(request, requestedAt);
       this.queue.push(job);
       // 先持久化再触发执行，保存失败时撤销入队并清理输入副本。
       try {
         await this.record(job);
       } catch (error) {
         this.queue = this.queue.filter((item) => item !== job);
-        await job.dispose();
+        await removeProjectInput(job.source);
         throw error;
       }
-      if (input.kind === 'preview') {
+      if (request.kind === 'preview') {
         // 仅限制预览的排队时长；开始执行时会清除此计时器。
         job.timer = setTimeout(() => void this.expire(job), this.queueTimeout);
         // 计时器本身不阻止 Node.js 进程正常退出。
@@ -179,6 +210,43 @@ export class BuildScheduler {
       this.pump();
       return job;
     });
+  }
+
+  /**
+   * 集中初始化 BuildJob 的全部属性。任务仅携带执行数据，不包含自定义 run/dispose。
+   * completion 用于等待结果；预览路由只等待 submit 返回，再通过 GET 查询状态。
+   * @returns {BuildJob}
+   */
+  createJob(request, requestedAt) {
+    const { promise, resolve, reject } = Promise.withResolvers();
+    // 预览没有人 await completion 时，也不产生未处理拒绝；原 Promise 仍保留失败结果。
+    void promise.catch(() => {});
+    return {
+      id: randomUUID(),
+      projectId: request.projectId,
+      account: request.account,
+      kind: request.kind,
+      revision: request.revision,
+      builderVersion: request.builderVersion,
+      project: request.project,
+      user: request.user,
+      source: request.source,
+      status: 'queued',
+      phase: 'queue',
+      queuedAt: new Date().toISOString(),
+      requestedAt,
+      startedAt: null,
+      completedAt: null,
+      error: '',
+      result: null,
+      events: [],
+      listeners: new Set(),
+      persistence: Promise.resolve(),
+      completion: promise,
+      resolve,
+      reject,
+      timer: null,
+    };
   }
 
   /** 预览排队超时回调：仍处于 queued 才标记失败、清理副本并拒绝 completion。 */
@@ -192,7 +260,7 @@ export class BuildScheduler {
       try {
         await this.record(job);
       } finally {
-        await job.dispose().catch((error) => console.error('[build-queue] 清理失败:', error.message));
+        await removeProjectInput(job.source).catch((error) => console.error('[build-queue] 清理失败:', error.message));
         job.reject(new Error(job.error));
       }
     }).catch((error) => console.error('[build-queue]', error));
@@ -217,19 +285,20 @@ export class BuildScheduler {
     });
   }
 
+  /** pipeline 和 service 直接调用此方法报告进度；更新阶段并顺序落库、通知 SSE 订阅者。 */
+  reportProgress(job, event) {
+    if (event.event === 'step') job.phase = event.data.key;
+    void this.record(job, event);
+  }
+
   /**
-   * 执行完整生命周期：运行 run -> 保存成功/失败 -> 通知等待者 -> 清理输入 -> 启动下一项。
-   * run 中的正式发布收尾也占用执行槽，避免构建已结束但发布记录尚未保存就开始下一项。
+   * 执行完整生命周期：service.executeBuild -> 保存结果 -> 通知等待者 -> 清理源码 -> 下一项。
+   * service 中的正式发布收尾也占用执行槽，避免构建已结束但发布记录尚未保存就开始下一项。
    */
   async execute(job) {
-    // 传给 pipeline 的进度回调：把构建阶段反写到 job，再落库/推送事件。
-    const send = (event) => {
-      if (event.event === 'step') job.phase = event.data.key;
-      void this.record(job, event);
-    };
     try {
       await this.record(job);
-      job.result = await job.run(send, job);
+      job.result = await this.service.executeBuild(job);
       job.status = 'ready';
       job.phase = 'ready';
       job.completedAt = new Date().toISOString();
@@ -247,7 +316,7 @@ export class BuildScheduler {
         console.error('[build-queue] 保存失败状态失败:', failure.message));
       job.reject(error);
     } finally {
-      await job.dispose().catch((error) => console.error('[build-queue] 清理失败:', error.message));
+      await removeProjectInput(job.source).catch((error) => console.error('[build-queue] 清理失败:', error.message));
       await this.locked(() => { this.active = null; });
       this.pump();
     }

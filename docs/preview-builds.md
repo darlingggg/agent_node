@@ -4,9 +4,50 @@
 
 工作台先尝试 WebContainer。初始化 20 秒、依赖安装 60 秒、开发服务启动 20 秒、整个本地启动 90 秒均有超时；失败后自动使用兼容预览，同一浏览器会话按账号和项目记住该模式。
 
-兼容预览通过 `POST /project/preview` 提交，仅传 `projectId`。JWT 和项目所属账号校验通过后，后端从数据库读取目录，忽略客户端传来的目录。`GET /project/preview?projectId=...` 返回 `desiredRevision`、`active`、`pending`、`lastReady` 和 `latest`。前端有任务时每 2 秒查询，完成、失败或请求错误后停止，不无限重试。
+兼容预览通过 `POST /project/preview` 提交 `projectId` 和可选的 `force`。JWT 和项目所属账号校验通过后，后端从数据库读取目录，忽略客户端传来的目录。`GET /project/preview?projectId=...` 返回 `desiredRevision`、`active`、`pending`、`lastReady` 和 `latest`。前端有任务时每 2 秒查询，完成、失败或请求错误后停止，不无限重试。
 
 只有兼容模式会提交服务端预览。AI 文件工具仅标记文件变化，一轮回复正常结束或取消后更新；手动保存、素材变更、快照恢复、模板升级停顿 2 秒后更新。AI 正在生成时不因单个文件更新而构建。
+
+## 后端代码阅读顺序
+
+路由直接通过 `router.get/post` 注册，默认导出 Router；不再通过工厂函数组装接口。预览和正式发布都从 `service.js` 导入共享的 `projectBuilds` 实例。
+
+```text
+POST /project/preview
+  -> ProjectBuildService.request
+  -> prepareRequest：固定源码、复用成功链接、检查失败重试
+  -> BuildScheduler.submit：复用/替换/新建任务，返回 job
+  -> previewState：返回当前状态，HTTP 不等待构建完成
+
+BuildScheduler.pump：空闲时选取任务
+  -> execute
+  -> ProjectBuildService.executeBuild
+  -> BuildPipeline.build
+       -> prepareArtifacts：复用产物，或安装依赖并构建
+       -> prepareUpload：复制产物，附加预览响应头和页面确认脚本
+       -> deploy：上传 Cloudflare，提取 link
+  -> 正式发布额外执行 finalizePublication：快照和正式记录
+  -> scheduler 保存 ready/result，清理源码副本，启动下一项
+
+GET /project/preview
+  -> previewState：查内存队列与数据库历史
+  -> lastReady.result.link
+```
+
+`job` 的字段说明和初始化集中在 `scheduler.js` 的 `BuildJob`、`createJob()`。`job.source` 显式保存 `{ directory, revision }`；`project/user` 用于正式发布收尾。任务不再保存匿名 `run/dispose` 函数。`view()` 只提取对外状态，内部源码目录、用户对象、Promise 和监听器不进入数据库或接口响应。
+
+构建方法的返回值用于传递最终结果；进度统一直接调用 `scheduler.reportProgress(job, event)`。安装、构建和部署使用 `pipeline.runCommand()` 直接调用 `process-runner.js` 中的命令执行器，不通过多层命令回调推进步骤。
+
+| 文件 | 职责 |
+| --- | --- |
+| `service.js` | 请求准备、状态查询、构建执行入口、正式发布收尾、共享实例 |
+| `scheduler.js` | 任务定义、去重/合并、执行槽、生命周期和进度订阅 |
+| `pipeline.js` | 顺序构建部署、单步骤执行和进度/日志整理 |
+| `project-input.js` | 源码副本、依赖/产物指纹、Vite 构建配置、缓存目录清理 |
+| `task-store.js` | MySQL 任务读写和重启恢复 |
+| `environment.js`、`resource-policy.js` | 子进程环境白名单、Linux 资源限制和诊断 |
+
+原 `build/index.js` 的组装与发布收尾已合入 `service.js`；`build-step.js` 合入 `pipeline.js`；`profile.js` 合入 `project-input.js`。测试在数据库、构建器和命令执行器边界替换外部操作，HTTP 测试直接挂载生产路由。
 
 ## 文件与缓存
 

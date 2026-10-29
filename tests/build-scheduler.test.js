@@ -1,6 +1,9 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { setImmediate as tick, setTimeout as delay } from 'node:timers/promises';
+import path from 'node:path';
+import os from 'node:os';
+import { randomUUID } from 'node:crypto';
 import { BuildScheduler } from '../node/exec/build/scheduler.js';
 
 function deferred() {
@@ -9,8 +12,24 @@ function deferred() {
   return { promise, resolve };
 }
 
+// 测试执行器按源码副本标识选择行为，确保排队替换实际执行的是新 source。
+const executions = new Map();
 function input(projectId, revision, run, kind = 'preview') {
-  return { projectId, account: 'test', kind, revision, run, dispose: async () => {} };
+  const directory = path.join(os.tmpdir(), 'agent-scheduler-test-' + randomUUID());
+  executions.set(directory, run);
+  return { projectId, account: 'test', kind, revision, source: { directory, revision },
+    project: { id: projectId }, user: { account: 'test' } };
+}
+
+function createScheduler({ save = async () => {}, ...options } = {}) {
+  const scheduler = new BuildScheduler({
+    ...options,
+    store: { save },
+    service: { executeBuild(job) {
+      return executions.get(job.source.directory)((event) => scheduler.reportProgress(job, event), job);
+    } },
+  });
+  return scheduler;
 }
 
 async function idle(scheduler) {
@@ -20,7 +39,7 @@ async function idle(scheduler) {
 }
 
 test('A1 completes, A2/A3/A4 coalesce to A4 without bypassing another queued project', async () => {
-  const scheduler = new BuildScheduler();
+  const scheduler = createScheduler();
   const gate = deferred();
   const order = [];
   let running = 0;
@@ -51,7 +70,7 @@ test('A1 completes, A2/A3/A4 coalesce to A4 without bypassing another queued pro
 
 test('duplicate content reuses the task; reverting to running content removes the pending target', async () => {
   const saved = new Map();
-  const scheduler = new BuildScheduler({ save: async (task) => saved.set(task.id, task) });
+  const scheduler = createScheduler({ save: async (task) => saved.set(task.id, task) });
   const gate = deferred();
   const first = await scheduler.submit(input(1, 'A', () => gate.promise));
   await tick();
@@ -67,7 +86,7 @@ test('duplicate content reuses the task; reverting to running content removes th
 });
 
 test('publications have priority, reuse duplicate submissions and hold the slot through finalization', async () => {
-  const scheduler = new BuildScheduler();
+  const scheduler = createScheduler();
   const firstGate = deferred();
   const finalize = deferred();
   const order = [];
@@ -100,7 +119,7 @@ test('publications have priority, reuse duplicate submissions and hold the slot 
 });
 
 test('capacity counts distinct projects, so latest updates do not consume another slot', async () => {
-  const scheduler = new BuildScheduler({ maxProjects: 2 });
+  const scheduler = createScheduler({ maxProjects: 2 });
   const gate = deferred();
   const first = await scheduler.submit(input(1, 'A', () => gate.promise));
   await tick();
@@ -113,7 +132,7 @@ test('capacity counts distinct projects, so latest updates do not consume anothe
 });
 
 test('replacement keeps the original queue deadline; expiration releases its project slot', async () => {
-  const scheduler = new BuildScheduler({ queueTimeout: 30 });
+  const scheduler = createScheduler({ queueTimeout: 30 });
   const gate = deferred();
   const first = await scheduler.submit(input(1, 'A', () => gate.promise));
   await tick();
@@ -130,7 +149,7 @@ test('replacement keeps the original queue deadline; expiration releases its pro
 
 test('process and persistence failures release the execution slot for subsequent work', async () => {
   let failWrite = false;
-  const scheduler = new BuildScheduler({ save: async () => {
+  const scheduler = createScheduler({ save: async () => {
     if (failWrite) { failWrite = false; throw new Error('write failed'); }
   } });
   const first = await scheduler.submit(input(1, 'A', async (send) => {

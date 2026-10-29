@@ -1,1 +1,1 @@
-export { projectBuilds } from './build/index.js';
+export { projectBuilds } from './build/service.js';

@@ -5,7 +5,7 @@ function parse(row) {
   return typeof row.payload === 'string' ? JSON.parse(row.payload) : row.payload;
 }
 
-/** 持久化任务状态和成功链接；不保存可执行回调，不承担内存队列调度。 */
+/** 持久化 scheduler.view(job) 提取的状态和成功链接；内部执行数据与队列留在内存。 */
 export const buildTaskStore = {
   /** 按任务 ID 插入或更新 scheduler.view(job) 的状态快照，payload 保留完整可查询字段。 */
   async save(task) {
@@ -41,7 +41,7 @@ export const buildTaskStore = {
     return rows.length ? parse(rows[0]) : null;
   },
 
-  /** 重启后将遗留 queued/running 标为失败；内存回调已丢失，不能直接恢复执行，成功记录保留。 */
+  /** 重启后将遗留 queued/running 标为失败；内存队列和源码上下文已丢失，成功记录保留。 */
   async recover() {
     const [rows] = await connection.query(
       "SELECT payload FROM project_build_tasks WHERE status IN ('queued', 'running')",

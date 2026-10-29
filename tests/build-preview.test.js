@@ -3,19 +3,19 @@ import { test, after } from 'node:test';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { setImmediate as tick } from 'node:timers/promises';
+import { setImmediate as tick, setTimeout as delay } from 'node:timers/promises';
 
 const testRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'agent-build-tests-'));
 process.env.BUILD_CACHE_ROOT = path.join(testRoot, 'cache');
-const { captureProjectInput, projectCacheRoot } = await import('../node/exec/build/project-input.js');
-const { createBuildPipeline } = await import('../node/exec/build/pipeline.js');
-const { createBuildService } = await import('../node/exec/build/service.js');
+const { captureProjectInput, removeProjectInput, projectCacheRoot, artifactRevision, BUILD_PROFILE_VERSION } = await import('../node/exec/build/project-input.js');
+const { BuildPipeline } = await import('../node/exec/build/pipeline.js');
+const { ProjectBuildService } = await import('../node/exec/build/service.js');
 const { buildEnvironment } = await import('../node/exec/build/environment.js');
 const { execCommand } = await import('../node/exec/process-runner.js');
 const { assertPreviewBranch } = await import('../node/exec/deploy/cloudflare.js');
-const { artifactRevision, BUILD_PROFILE_VERSION } = await import('../node/exec/build/profile.js');
 after(() => fs.rm(testRoot, { recursive: true, force: true }));
 
+const progress = { reportProgress() {} };
 const success = { success: true, code: 0, stdout: '', stderr: '' };
 
 async function fixture(name) {
@@ -31,29 +31,31 @@ function runners(projectId = 1) {
   const counts = { install: 0, build: 0, upload: 0 };
   const api = {
     counts,
-    validatePreviewBranch: async () => {},
-    pnpm: async (args, cwd) => {
-      if (args[0] === 'install') {
-        counts.install++;
-        await fs.mkdir(path.join(cwd, 'node_modules'), { recursive: true });
+    previewBranchCheck: async () => {},
+    commands: {
+      runPnpm: async (args, cwd) => {
+        if (args[0] === 'install') {
+          counts.install++;
+          await fs.mkdir(path.join(cwd, 'node_modules'), { recursive: true });
+          return success;
+        }
+        counts.build++;
+        const outDir = args[args.indexOf('--outDir') + 1];
+        await fs.mkdir(outDir, { recursive: true });
+        await fs.writeFile(path.join(outDir, 'index.html'), await fs.readFile(path.join(cwd, 'index.html')));
+        await fs.writeFile(path.join(outDir, 'main.js'), await fs.readFile(path.join(cwd, 'src/main.js')));
         return success;
-      }
-      counts.build++;
-      const outDir = args[args.indexOf('--outDir') + 1];
-      await fs.mkdir(outDir, { recursive: true });
-      await fs.writeFile(path.join(outDir, 'index.html'), await fs.readFile(path.join(cwd, 'index.html')));
-      await fs.writeFile(path.join(outDir, 'main.js'), await fs.readFile(path.join(cwd, 'src/main.js')));
-      return success;
-    },
-    wrangler: async (args, cwd) => {
-      counts.upload++;
-      assert.ok(args.includes(`--branch=preview-p${projectId}`));
-      assert.equal(await fs.stat(path.join(cwd, 'dist/index.html')).then((stat) => stat.isFile()), true);
-      const html = await fs.readFile(path.join(cwd, 'dist/index.html'), 'utf8');
-      assert.match(html, /agent-preview-ready/);
-      const headers = await fs.readFile(path.join(cwd, 'dist/_headers'), 'utf8');
-      assert.match(headers, /Cross-Origin-Embedder-Policy: credentialless/);
-      return { ...success, stdout: 'Deployment complete! https://immutable.gen-agent.pages.dev' };
+      },
+      runWrangler: async (args, cwd) => {
+        counts.upload++;
+        assert.ok(args.includes(`--branch=preview-p${projectId}`));
+        assert.equal(await fs.stat(path.join(cwd, 'dist/index.html')).then((stat) => stat.isFile()), true);
+        const html = await fs.readFile(path.join(cwd, 'dist/index.html'), 'utf8');
+        assert.match(html, /agent-preview-ready/);
+        const headers = await fs.readFile(path.join(cwd, 'dist/_headers'), 'utf8');
+        assert.match(headers, /Cross-Origin-Embedder-Policy: credentialless/);
+        return { ...success, stdout: 'Deployment complete! https://immutable.gen-agent.pages.dev' };
+      },
     },
   };
   return api;
@@ -73,18 +75,18 @@ test('source inputs are immutable, include binary assets, and skip dependency/bu
   await assert.rejects(fs.access(path.join(input.directory, 'node_modules')));
   const changed = await captureProjectInput(1, root);
   assert.notEqual(input.revision, changed.revision);
-  await input.dispose();
-  await changed.dispose();
+  await removeProjectInput(input);
+  await removeProjectInput(changed);
 });
 
 test('unchanged dependencies skip installation; a changed manifest invalidates the dependency cache', async () => {
   const root = await fixture('dependencies');
   const api = runners(2);
-  const build = createBuildPipeline(api);
+  const build = new BuildPipeline(api);
   const run = async () => {
     const input = await captureProjectInput(2, root);
-    try { return await build({ projectId: 2, input, kind: 'preview', send: () => {} }); }
-    finally { await input.dispose(); }
+    try { return await build.build({ projectId: 2, source: input, kind: 'preview' }, progress); }
+    finally { await removeProjectInput(input); }
   };
   await run();
   await fs.writeFile(path.join(root, 'src/main.js'), 'version B');
@@ -104,19 +106,19 @@ test('upload retry reuses the compiled artifact even if node_modules no longer e
   const input = await captureProjectInput(3, root);
   const api = runners(3);
   let failUpload = true;
-  const build = createBuildPipeline({ ...api, wrangler: async (...args) => {
+  const build = new BuildPipeline({ ...api, commands: { ...api.commands, runWrangler: async (...args) => {
     if (failUpload) { failUpload = false; return { ...success, success: false, stderr: 'network failed' }; }
-    return api.wrangler(...args);
-  } });
-  const args = { projectId: 3, input, kind: 'preview', send: () => {} };
-  await assert.rejects(build(args), /network failed/);
+    return api.commands.runWrangler(...args);
+  } } });
+  const args = { projectId: 3, source: input, kind: 'preview' };
+  await assert.rejects(build.build(args, progress), /network failed/);
   const before = { ...api.counts };
   await fs.rm(path.join(projectCacheRoot(3), 'work/node_modules'), { recursive: true, force: true });
-  const result = await build(args);
+  const result = await build.build(args, progress);
   assert.equal(result.link, 'https://immutable.gen-agent.pages.dev');
   assert.equal(api.counts.install, before.install);
   assert.equal(api.counts.build, before.build);
-  await input.dispose();
+  await removeProjectInput(input);
 });
 
 function memoryStore() {
@@ -133,17 +135,18 @@ function memoryStore() {
   };
 }
 
-test('service reuses successful links and keeps displayed/desired versions separate after later failures', async () => {
+test('service reuses successful links and keeps displayed/desired versions separate after later failures', async (t) => {
   const root = await fixture('service');
   const store = memoryStore();
   let builds = 0;
   let publishCount = 0;
-  const service = createBuildService({ store, build: async ({ kind }) => {
+  const service = new ProjectBuildService({ store, pipeline: { build: async ({ kind }) => {
     builds++;
     if (builds === 2) throw new Error('syntax error');
     assert.equal(kind, 'preview');
     return { link: 'https://old.gen-agent.pages.dev', completedAt: new Date().toISOString() };
-  }, publish: async () => { publishCount++; } });
+  } } });
+  t.mock.method(service, 'finalizePublication', async () => { publishCount++; });
   const project = { id: 5, account: 'owner', dir_path: root };
   const first = await service.request(project, 'preview', {});
   await first.completion;
@@ -172,7 +175,7 @@ test('failed source is not rebuilt on reopen, explicit retry and changed source 
   const root = await fixture('failure-guard');
   const store = memoryStore();
   let count = 0;
-  const service = createBuildService({ store, build: async () => { count++; throw new Error('resource limit'); } });
+  const service = new ProjectBuildService({ store, pipeline: { build: async () => { count++; throw new Error('resource limit'); } } });
   const project = { id: 18, account: 'owner', dir_path: root };
   const run = async (options) => {
     const job = await service.request(project, 'preview', {}, options);
@@ -198,17 +201,17 @@ test('preview and publish artifacts use distinct versioned keys', () => {
   assert.notEqual(artifactRevision(revision, 'preview'), revision);
 });
 
-test('admission includes projects still capturing input, before a sixth project reads files', async () => {
+test('admission includes projects still capturing input, before a sixth project reads files', async (t) => {
   let release;
   let captures = 0;
   const gate = new Promise((resolve) => { release = resolve; });
-  const service = createBuildService({ store: memoryStore(),
-    capture: async () => {
-      captures++;
-      await gate;
-      return { revision: 'a'.repeat(64), dispose: async () => {} };
-    },
-    build: async () => ({ link: 'https://test.gen-agent.pages.dev' }),
+  const service = new ProjectBuildService({
+    store: memoryStore(), pipeline: { build: async () => ({ link: 'https://test.gen-agent.pages.dev' }) },
+  });
+  t.mock.method(service, 'captureSource', async (project) => {
+    captures++;
+    await gate;
+    return { directory: path.join(testRoot, 'admission-' + project.id), revision: 'a'.repeat(64) };
   });
   const requests = Array.from({ length: 5 }, (_, id) =>
     service.request({ id: id + 1, account: 'owner', dir_path: '/unused' }, 'preview', {}));
@@ -236,14 +239,16 @@ test('real child-process timeout and cancellation both settle after termination'
 test('the preview execution deadline reaches child processes', async () => {
   const root = await fixture('deadline');
   const input = await captureProjectInput(9, root);
-  const build = createBuildPipeline({ previewTimeout: 150,
-    validatePreviewBranch: async () => {},
-    pnpm: (_args, cwd, timeout, options) => execCommand(process.execPath,
+  const build = new BuildPipeline({ previewTimeout: 150,
+    previewBranchCheck: async () => {},
+    commands: {
+    runPnpm: (_args, cwd, timeout, options) => execCommand(process.execPath,
       ['-e', 'setInterval(() => {}, 1000)'], cwd, { ...options, timeout }),
-    wrangler: async () => assert.fail('must not upload after timeout'),
+    runWrangler: async () => assert.fail('must not upload after timeout'),
+    },
   });
-  await assert.rejects(build({ projectId: 9, input, kind: 'preview', send: () => {} }));
-  await input.dispose();
+  await assert.rejects(build.build({ projectId: 9, source: input, kind: 'preview' }, progress));
+  await removeProjectInput(input);
 });
 
 test('preview deployments reject production branch collisions and unreadable project metadata', async () => {
@@ -252,4 +257,49 @@ test('preview deployments reject production branch collisions and unreadable pro
   await assertPreviewBranch('preview-p1', { fetcher: metadata('main') });
   await assert.rejects(assertPreviewBranch('preview-p1', { fetcher: metadata('preview-p1') }), /生产分支冲突/);
   await assert.rejects(assertPreviewBranch('preview-p1', { fetcher: async () => ({ ok: false }) }), /凭据或网络/);
+});
+
+test('service executes the fixed running source and latest queued source, then removes owned copies', async () => {
+  const root = await fixture('coalesced-sources');
+  const gate = Promise.withResolvers();
+  const versions = [];
+  const service = new ProjectBuildService({
+    store: memoryStore(),
+    pipeline: { async build(job) {
+      if (versions.length === 0) await gate.promise;
+      const version = await fs.readFile(path.join(job.source.directory, 'src/main.js'), 'utf8');
+      versions.push(version);
+      return { link: 'https://version-' + versions.length + '.gen-agent.pages.dev' };
+    } },
+  });
+  const project = { id: 27, account: 'owner', dir_path: root };
+  const jobs = [];
+  try {
+    const first = await service.request(project, 'preview', {});
+    jobs.push(first);
+    await fs.writeFile(path.join(root, 'src/main.js'), 'version B');
+    const queued = await service.request(project, 'preview', {});
+    jobs.push(queued);
+    const removedSource = queued.source.directory;
+    await fs.writeFile(path.join(root, 'src/main.js'), 'version C');
+    const updated = await service.request(project, 'preview', {});
+    assert.equal(updated, queued);
+    await assert.rejects(fs.access(removedSource));
+    assert.equal(await fs.readFile(path.join(first.source.directory, 'src/main.js'), 'utf8'), 'version A');
+    const latestSource = queued.source.directory;
+    gate.resolve();
+    await Promise.all(jobs.map((job) => job.completion));
+    for (let i = 0; i < 200 && service.scheduler.active; i++) await delay(10);
+    assert.equal(service.scheduler.active, null);
+    assert.deepEqual(versions, ['version A', 'version C']);
+    await assert.rejects(fs.access(first.source.directory));
+    await assert.rejects(fs.access(latestSource));
+    const state = await service.previewState(project.id);
+    assert.equal(state.lastReady.revision, queued.revision);
+    assert.equal(state.desiredRevision, queued.revision);
+  } finally {
+    gate.resolve();
+    await Promise.allSettled(jobs.map((job) => job.completion));
+    for (let i = 0; i < 200 && service.scheduler.active; i++) await delay(10);
+  }
 });

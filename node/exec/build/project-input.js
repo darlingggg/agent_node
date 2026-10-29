@@ -4,6 +4,9 @@ import { createHash, randomUUID } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 
+// 构建策略变化时更新此值，使产物缓存与相同源码失败抑制能够区分新旧策略。
+export const BUILD_PROFILE_VERSION = 'bounded-build-v1';
+
 // 每个项目各有 inputs/work/artifacts/upload，避免直接在持续编辑的源码目录安装、构建。
 export const BUILD_CACHE_ROOT = path.resolve(process.env.BUILD_CACHE_ROOT || path.join(
   process.platform === 'linux' ? path.join(os.homedir(), '.cache') : os.tmpdir(), 'agent-project-builds'));
@@ -50,7 +53,7 @@ export function manifestRevision(manifest) {
 /**
  * 把源码固定为独立 inputs/<uuid> 副本，供 service 提交任务，避免排队期间编辑影响任务。
  * 对比复制前、复制后原目录及副本的指纹；不一致或文件消失时最多尝试 3 次。
- * 返回 { directory, revision, dispose }：副本路径、源码版本、删除副本的异步回调。
+ * 返回 { directory, revision }：副本路径和源码版本，清理时调用 removeProjectInput。
  * 未提交的副本由 service 清理，调度器接管后在完成/替换/超时时清理。
  */
 export async function captureProjectInput(projectId, root) {
@@ -71,7 +74,7 @@ export async function captureProjectInput(projectId, root) {
       const after = manifestRevision(await projectManifest(root));
       // 复制前的源码、输入副本和复制后的源码指纹一致，才接受本次输入。
       if (revision === copied && revision === after) {
-        return { directory, revision, dispose: () => fs.rm(directory, { recursive: true, force: true }) };
+        return { directory, revision };
       }
     } catch (error) {
       await fs.rm(directory, { recursive: true, force: true });
@@ -149,4 +152,32 @@ export async function clearAbandonedBuildInputs() {
     if (!project.isDirectory() || !/^\d+$/.test(project.name)) continue;
     await fs.rm(path.join(BUILD_CACHE_ROOT, project.name, 'inputs'), { recursive: true, force: true });
   }
+}
+
+/** 删除固定源码副本；不会清理依赖缓存或构建产物。 */
+export async function removeProjectInput(source) {
+  await fs.rm(source.directory, { recursive: true, force: true });
+}
+
+/** 源码版本 + 任务类型 + 构建策略生成产物缓存键，避免预览未压缩产物与正式产物混用。 */
+export function artifactRevision(revision, kind) {
+  return createHash('sha256').update(`${BUILD_PROFILE_VERSION}:${kind}:${revision}`).digest('hex');
+}
+
+/**
+ * 在 work/.agent-build 中生成 Vite 配置并返回文件路径，供 pipeline 的 --config 使用。
+ * 运行时读取原项目配置并合并，保留插件/别名；关闭 sourcemap 和压缩体积统计。
+ * preview 额外关闭 JS/CSS 压缩，publish 保留原压缩设置；不修改原项目配置文件。
+ */
+export async function writeBuildConfig(workspace, kind) {
+  const directory = path.join(workspace, '.agent-build');
+  await fs.mkdir(directory, { recursive: true });
+  const target = path.join(directory, 'vite.config.mjs');
+  const overrides = { build: { sourcemap: false, reportCompressedSize: false,
+    ...(kind === 'preview' ? { minify: false, cssMinify: false } : {}) } };
+  await fs.writeFile(target, `import { loadConfigFromFile, mergeConfig } from 'vite';\n`
+    + `export default async (env) => {\n`
+    + `  const original = await loadConfigFromFile(env, undefined, ${JSON.stringify(workspace)});\n`
+    + `  return mergeConfig(original?.config || {}, ${JSON.stringify(overrides)});\n};\n`);
+  return target;
 }

@@ -1,100 +1,151 @@
 import { BuildScheduler } from './scheduler.js';
 import { buildTaskStore } from './task-store.js';
-import { captureProjectInput } from './project-input.js';
-import { runProjectBuild } from './pipeline.js';
-import { BUILD_PROFILE_VERSION } from './profile.js';
+import { captureProjectInput, removeProjectInput, BUILD_PROFILE_VERSION } from './project-input.js';
+import { BuildPipeline } from './pipeline.js';
+import { addSnapshot } from '../../snapshot.js';
+import { buildProject, getProjectInfo } from '../../project.js';
+import { markUserActive } from '../../utils/activity.js';
+import { deleteOnlineVersion } from '../deploy/deployment.js';
 
 /**
- * 创建预览与正式发布共用的服务：接口 -> request -> scheduler -> build。
- * store 负责数据库，capture 准备源码副本，build 执行构建部署，publish 做正式发布收尾。
- * 默认参数用于生产运行；测试可传入替身，避免连接数据库或实际部署。
- * 返回的对象及其 scheduler 会被 build/index.js 保存为进程内共享的 projectBuilds。
+ * 预览/发布的业务入口。
+ * 提交：路由 -> request -> prepareRequest -> scheduler.submit（只等待入队）。
+ * 执行：scheduler.execute -> executeBuild -> pipeline.build -> finalizePublication。
+ * 查询：previewState 合并内存队列与数据库历史，返回前端轮询需要的状态。
  */
-export function createBuildService({ store = buildTaskStore, capture = captureProjectInput,
-  build = runProjectBuild, publish = async () => {} } = {}) {
-  const scheduler = new BuildScheduler({ save: (task) => store.save(task) });
-  // projectId -> 最近一次提交准备的 Promise；也用于把准备源码中的项目计入容量。
-  const projectRequests = new Map();
+export class ProjectBuildService {
+  /** 默认使用真实数据库和构建器；测试仅在这两个外部依赖边界替换实现。 */
+  constructor({ store = buildTaskStore, pipeline = new BuildPipeline() } = {}) {
+    this.store = store;
+    this.pipeline = pipeline;
+    this.scheduler = new BuildScheduler({ store, service: this });
+    // 同项目的源码准备和提交串行化；准备中的项目也占用接单容量。
+    this.projectRequests = new Map();
+  }
 
   /**
-   * 同项目的“复制源码 -> 查缓存 -> 提交任务”依次处理，不等待构建本身结束。
-   * action 失败仍向当前调用方抛错，但不会阻断该项目后续请求。
+   * 提交已通过归属校验的项目。返回 BuildJob；复用成功链接或抑制失败重试时返回 null。
+   * 此处只等待复制源码、检查缓存和入队；构建结果由 job.completion 或 GET 查询取得。
    */
-  function serialized(projectId, action) {
-    const result = (projectRequests.get(projectId) || Promise.resolve()).then(action);
-    const settled = result.catch(() => {});
-    projectRequests.set(projectId, settled);
-    void settled.then(() => {
-      // 只有自己仍是队尾时才移除，避免旧请求删掉新请求的占位。
-      if (projectRequests.get(projectId) === settled) projectRequests.delete(projectId);
-    });
+  async request(project, kind, user, { force = false } = {}) {
+    this.scheduler.assertCapacity(project.id, this.projectRequests.keys());
+    const previous = this.projectRequests.get(project.id) || Promise.resolve();
+    const pending = this.prepareRequest(previous, project, kind, user, force);
+    // 当前请求的错误返回给调用者，但不能阻断同项目后续提交。
+    const settled = pending.catch(() => {});
+    this.projectRequests.set(project.id, settled);
+    try {
+      return await pending;
+    } finally {
+      if (this.projectRequests.get(project.id) === settled) this.projectRequests.delete(project.id);
+    }
+  }
+
+  /**
+   * 等前一次提交准备结束，固定本次源码，然后决定复用、跳过或入队。
+   * source 是 { directory, revision }；入队后由 scheduler 负责删除这份源码副本。
+   */
+  async prepareRequest(previous, project, kind, user, force) {
+    await previous;
+    const existing = this.scheduler.find(project.id, kind)[0];
+    if (kind === 'publish' && existing) return existing;
+
+    const source = await this.captureSource(project);
+    let scheduled = false;
+    try {
+      const latest = await this.store.latest(project.id, kind);
+      this.scheduler.nextRequest(latest?.requestedAt || 0);
+      if (kind === 'preview') {
+        const cached = await this.store.ready(project.id, source.revision);
+        if (cached) {
+          await this.scheduler.cancelQueued(project.id, kind);
+          await this.store.save({ ...cached, requestedAt: this.scheduler.nextRequest() });
+          return null;
+        }
+        if (!force && latest?.status === 'failed' && latest.revision === source.revision
+          && latest.builderVersion === BUILD_PROFILE_VERSION) return null;
+      }
+
+      // 任务仅携带数据；统一由本类 executeBuild 执行，不再为每次提交创建 run 闭包。
+      const job = await this.scheduler.submit({
+        projectId: project.id,
+        account: project.account,
+        kind,
+        builderVersion: BUILD_PROFILE_VERSION,
+        revision: source.revision,
+        project,
+        user,
+        source,
+      });
+      scheduled = true;
+      return job;
+    } finally {
+      if (!scheduled) await removeProjectInput(source);
+    }
+  }
+
+  /** 从数据库确认的项目目录固定源码；后续编辑不会改变本次任务的输入。 */
+  captureSource(project) {
+    return captureProjectInput(project.id, project.dir_path);
+  }
+
+  /**
+   * 由 scheduler.execute 在取得执行槽后调用。返回含 link 的构建结果。
+   * 正式发布必须完成快照和发布记录保存才返回；兼容预览直接返回部署结果。
+   */
+  async executeBuild(job) {
+    const result = await this.pipeline.build(job, this.scheduler);
+    if (job.kind === 'publish') await this.finalizePublication(job, result);
     return result;
   }
 
   /**
-   * 组合数据库历史和内存队列，供 POST 响应与 GET 轮询共用；不会扫描源码或创建任务。
-   * desiredRevision/latest 表示最近请求的版本，active/pending 表示当前运行/排队任务。
-   * lastReady 优先选择目标版本的成功记录，否则保留最近成功页面，避免新构建失败后白屏。
+   * 部署成功后的正式发布收尾：从任务源码副本生成快照、更新正式链接、清理旧部署。
+   * 仍占用构建执行槽；保存失败会交给 scheduler 标为失败，预览不会调用本方法。
    */
-  async function previewState(projectId) {
-    const latest = await store.latest(projectId, 'preview');
-    const live = scheduler.find(projectId, 'preview');
-    const matching = latest ? await store.ready(projectId, latest.revision) : null;
-    const ready = matching || await store.ready(projectId);
-    return { desiredRevision: latest?.revision || '',
-      active: scheduler.view(live.find((task) => task.status === 'running')),
-      pending: scheduler.view(live.find((task) => task.status === 'queued')),
-      lastReady: ready, latest };
+  async finalizePublication(job, result) {
+    const { project, user, source } = job;
+    const current = await getProjectInfo(project.id, user);
+    this.scheduler.reportProgress(job, {
+      event: 'step', data: { key: 'save', title: '保存发布记录', status: 'running' },
+    });
+    const version = `构建${job.id}`;
+    const { id } = await addSnapshot(project.id, version, project.dir_path, '', user, 0,
+      project.temp_version, source.directory);
+    await buildProject(project.id, result.link, id, result.deploymentId);
+    await markUserActive(user.id);
+    this.scheduler.reportProgress(job, {
+      event: 'step', data: { key: 'save', title: '保存发布记录', status: 'done' },
+    });
+    if (current.cloudflare_id) {
+      await deleteOnlineVersion(project.dir_path, current.cloudflare_id).catch((error) =>
+        console.warn('[build] 清理旧部署失败:', error.message));
+    }
   }
 
   /**
-   * 提交一次构建意图。project 必须已通过所属账号校验，源码目录取 project.dir_path。
-   * kind 为 preview 或 publish；force 只绕过相同源码、相同构建策略的失败重试抑制。
-   * 成功链接仍优先复用，force 并不表示无条件重新安装、构建或部署。
-   * 返回已提交/复用的 job，或在命中成功缓存、抑制失败重试时返回 null。
-   * await request() 只等待提交准备完成；等待实际结果需 await job.completion。
+   * GET/POST 共用的状态查询，不创建任务。active/pending 来自内存，latest/lastReady 来自数据库。
+   * lastReady 优先匹配目标版本，否则保留最近成功页面；新版本失败时仍可展示旧链接。
    */
-  async function request(project, kind, user, { force = false } = {}) {
-    scheduler.assertCapacity(project.id, projectRequests.keys());
-    return serialized(project.id, async () => {
-      const existing = scheduler.find(project.id, kind)[0];
-      if (kind === 'publish' && existing) return existing;
-      const input = await capture(project.id, project.dir_path);
-      let scheduled = false;
-      try {
-        const latest = await store.latest(project.id, kind);
-        // 请求顺序必须超过持久化记录，服务重启后也能正确识别用户最近想看的版本。
-        scheduler.nextRequest(latest?.requestedAt || 0);
-        if (kind === 'preview') {
-          const cached = await store.ready(project.id, input.revision);
-          if (cached) {
-            await scheduler.cancelQueued(project.id, kind);
-            // 用户又请求了历史成功版本：将其标为最新意图，不需要再创建构建任务。
-            await store.save({ ...cached, requestedAt: scheduler.nextRequest() });
-            return null;
-          }
-          // 相同源码失败后不因重新打开页面继续重跑；显式刷新才绕过抑制。
-          if (!force && latest?.status === 'failed' && latest.revision === input.revision
-            && latest.builderVersion === BUILD_PROFILE_VERSION) return null;
-        }
-        const job = await scheduler.submit({ projectId: project.id, account: project.account, kind,
-          builderVersion: BUILD_PROFILE_VERSION,
-          revision: input.revision, dispose: input.dispose,
-          // 这里只登记回调。闭包保留本次 input；调度器取得执行槽后才调用 run(send, task)。
-          run: async (send, task) => {
-            const result = await build({ projectId: project.id, input, kind, send });
-            if (kind === 'publish') await publish({ project, user, input, result, job: task, send });
-            return result;
-          } });
-        scheduled = true;
-        return job;
-      } finally {
-        // 未交给调度器的副本由服务清理；已提交副本由调度器在完成、替换或超时后清理。
-        if (!scheduled) await input.dispose();
-      }
-    });
+  async previewState(projectId) {
+    const latest = await this.store.latest(projectId, 'preview');
+    const live = this.scheduler.find(projectId, 'preview');
+    const matching = latest ? await this.store.ready(projectId, latest.revision) : null;
+    const ready = matching || await this.store.ready(projectId);
+    return {
+      desiredRevision: latest?.revision || '',
+      active: this.scheduler.view(live.find((task) => task.status === 'running')),
+      pending: this.scheduler.view(live.find((task) => task.status === 'queued')),
+      lastReady: ready,
+      latest,
+    };
   }
 
-  // recover 只把重启遗留任务标为失败，不恢复内存队列，也不自动重新发布。
-  return { scheduler, previewState, request, recover: () => store.recover() };
+  /** 服务重启时将遗留任务标为失败；保留成功记录，不自动恢复执行或重复发布。 */
+  recover() {
+    return this.store.recover();
+  }
 }
+
+// 路由直接导入此实例。整个进程共用一个调度器，预览与发布合计只有一个构建执行槽。
+export const projectBuilds = new ProjectBuildService();
