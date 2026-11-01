@@ -4,6 +4,7 @@ import { getProjectInfo } from '../../project.js';
 import {
   createStreamingAssistantSession,
   createUserChatSession,
+  saveSessionImageContext,
   getOrCreateConversation,
   settleConversationUsage,
 } from '../../session/index.js';
@@ -22,20 +23,18 @@ import { saveConversationModel } from '../../session/conversations.js';
 import { prepareSse, writeSse } from './sse.js';
 import { toolCallStore, summarizeTools } from '../../toolCalls.js';
 import { listImageGenerationTasks } from '../../imageGeneration.js';
+import { restoreImageHistory, uploadedImages } from '../../openai/media/image-input.js';
 
 const router = express.Router();
 
-function restoreContextHistory(rows, conversation) {
-  const history = rows.map((item) => ({
-    role: item.role === 'vision' ? 'user' : item.role,
-    content: item.content,
-    _sessionId: item.id,
-  }));
+function restoreContextHistory(rows, conversation, storageKey, archivedImages) {
+  const history = restoreImageHistory(rows, storageKey);
   if (conversation.summary) {
     history.unshift({
       role: 'system',
       content: `【历史对话压缩摘要】\n${conversation.summary}`,
       _isSummary: true,
+      _images: archivedImages,
       _summarizedUntilSessionId: conversation.summarized_until_session_id,
     });
   }
@@ -92,6 +91,7 @@ router.post('/chat/stream', authJWT, async (req, res) => {
   let context = message.map((item) => ({ ...item }));
   try {
     const project = await getProjectInfo(projectId, req.user);
+    const images = uploadedImages(imageUrls, req.user.storage_key);
     await markUserActive(req.user.id);
     const conversation = await getOrCreateConversation(
       {
@@ -107,14 +107,14 @@ router.post('/chat/stream', authJWT, async (req, res) => {
     const cachedHistory = conversation.title ? contextCache.get(contextKey) : undefined;
 
     if (conversation.title && cachedHistory === undefined) {
-      const { result } = await keepContext(
+      const { result, archivedImages } = await keepContext(
         req.user.account,
         projectId,
         conversation.title,
         conversation.id,
         conversation.summarized_until_session_id,
       );
-      const history = restoreContextHistory(result, conversation);
+      const history = restoreContextHistory(result, conversation, req.user.storage_key, archivedImages);
       context = context.concat(history);
       contextCache.set(contextKey, history);
     } else if (conversation.title) {
@@ -126,6 +126,7 @@ router.post('/chat/stream', authJWT, async (req, res) => {
         title: conversation.title,
         projectId,
         content: prompt,
+        images,
         conversationId: conversation.id,
         ...modelConfig,
       },
@@ -151,6 +152,7 @@ router.post('/chat/stream', authJWT, async (req, res) => {
         conversationId: conversation.id,
         model: modelConfig.model,
         reasoningEffort: modelConfig.reasoningEffort,
+        supportsVision: modelConfig.supportsVision,
       },
     });
 
@@ -167,6 +169,7 @@ router.post('/chat/stream', authJWT, async (req, res) => {
           prompt,
           {
             modelConfig,
+            images,
             webSearchEnabled,
             signal,
             userSessionId: userSession.id,
@@ -176,6 +179,7 @@ router.post('/chat/stream', authJWT, async (req, res) => {
               storageKey: req.user.storage_key,
               projectId: Number(projectId),
               conversationId: conversation.id,
+              persistImageContext: (value) => saveSessionImageContext(assistantSession.sessionId, value, req.user),
             },
           },
         ),

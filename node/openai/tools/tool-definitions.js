@@ -2,6 +2,24 @@ export const tools = [
   {
     type: 'function',
     function: {
+      name: 'view_image',
+      description: '查看图片的布局、文字、颜色和画面细节。恰好提供 imageIds（附件或生图结果中的 ID）或 paths（当前项目图片路径）其中一组。只拿到链接或文件名不代表已看图。原生视觉直接向你提供图片，否则返回外接视觉分析。',
+      parameters: {
+        type: 'object',
+        properties: {
+          imageIds: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 6 },
+          paths: { type: 'array', items: { type: 'string' }, minItems: 1, maxItems: 6 },
+          question: { type: 'string', minLength: 1, maxLength: 2000 },
+          detail: { type: 'string', enum: ['auto', 'low', 'high'] },
+        },
+        required: ['question'],
+        additionalProperties: false,
+      },
+    },
+  },
+  {
+    type: 'function',
+    function: {
       name: 'search_web',
       description:
         '搜索互联网中的最新信息、官方文档及需要核实的资料，返回网页标题、URL、摘要和发布时间。需要完整正文时再调用 fetch_page；回答时引用实际返回的来源链接。',

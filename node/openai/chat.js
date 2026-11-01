@@ -1,7 +1,7 @@
 import { client, CONTEXT_LIMIT_TOKENS, tokenizer } from './client.js';
 import { randomUUID } from 'node:crypto';
 import { compressContext } from './context/context-compression.js';
-import { describeImage } from './media/image-desc.js';
+import { buildModelMessages, collectImageContext, createImageRuntime, imageObservationMessage, uploadedImages } from './media/image-input.js';
 import { buildSystemPrompt, message } from './prompt/prompt.js';
 import { functionMap } from './tools/tool-handlers.js';
 import { tools } from './tools/tool-definitions.js';
@@ -10,7 +10,6 @@ import { parseToolResult, toolResultStatus } from '../toolCalls.js';
 import { modelRequestOptions } from '../models/config.js';
 import {
   bindProjectDirPath,
-  buildUserContent,
   mergeToolCallDeltas,
   parseToolArguments,
 } from './tools/tool-runtime.js';
@@ -19,34 +18,18 @@ import {
   countContextTokens,
   createUsageTracker,
   throwIfAborted,
-  toApiMessages,
 } from './context/usage.js';
 
-async function analyzeImages(imageUrls, prompt, userMessage, onEvent, tracker, signal) {
-  if (!Array.isArray(imageUrls) || imageUrls.length === 0) return '';
-
-  onEvent({ event: 'vision_start', data: null });
-  const result = await describeImage(prompt || userMessage, imageUrls, onEvent, signal);
-  const response = result?.response ?? '';
-  addUsage(
-    tracker,
-    result?.usage,
-    tokenizer.encode(`${prompt || userMessage}\n${JSON.stringify(imageUrls)}`).length,
-    tokenizer.encode(`${result?.reasoning || ''}${response}`).length,
-  );
-  if (response) onEvent({ event: 'vision_done', data: response });
-  return response;
-}
-
-async function streamModelResponse(context, tracker, signal, onEvent, modelConfig, webSearchEnabled) {
+async function streamModelResponse(context, tracker, signal, onEvent, modelConfig, toolContext) {
   await compressContext(context, tracker, signal, onEvent, modelConfig);
-  const messages = toApiMessages(context);
+  const messages = await buildModelMessages(context, modelConfig, toolContext.images);
+  throwIfAborted(signal);
   const fallbackPromptTokens = countContextTokens(messages);
   const stream = await client.chat.completions.create(
     {
       ...modelRequestOptions(modelConfig),
       messages,
-      tools: tools.filter((tool) => canUseTool(tool.function.name, webSearchEnabled)),
+      tools: tools.filter((tool) => canUseTool(tool.function.name, toolContext.webSearchEnabled)),
       tool_choice: 'auto',
       stream: true,
       stream_options: { include_usage: true },
@@ -119,6 +102,8 @@ async function executeToolCalls({
   projectDirPath,
   assistantSessionId,
   toolContext,
+  tracker,
+  modelConfig,
   onEvent,
   signal,
 }) {
@@ -158,11 +143,14 @@ async function executeToolCalls({
         invocationId: invocation.toolCallId,
         onEvent,
         signal,
+        modelConfig,
       });
 
+      const content = result?.modelContent ?? result;
+      if (result?.usage) addUsage(tracker, result.usage.usage, result.usage.promptTokens, tokenizer.encode(result.usage.completionText).length);
       throwIfAborted(signal);
-      const status = toolResultStatus(result);
-      const parsedResult = parseToolResult(result);
+      const status = toolResultStatus(content);
+      const parsedResult = parseToolResult(content);
       onEvent({ event: 'tool_end', data: {
         toolCallId: invocation.toolCallId, name, result: parsedResult, status,
         error: status === 'failed' ? parsedResult?.message || '工具执行失败' : undefined,
@@ -170,11 +158,14 @@ async function executeToolCalls({
         durationMs: Date.now() - new Date(startedAt).getTime(),
       } });
       return {
-        role: 'tool',
-        content: result,
-        tool_call_id: id,
-        _toolTurnId: toolTurnId,
-        _sessionId: assistantSessionId,
+        observation: result?.observation,
+        message: {
+          role: 'tool',
+          content,
+          tool_call_id: id,
+          _toolTurnId: toolTurnId,
+          _sessionId: assistantSessionId,
+        },
       };
     }),
   );
@@ -189,7 +180,7 @@ async function executeToolCalls({
   );
   context.push(
     ...results.map((item, index) => {
-      if (item.status === 'fulfilled') return item.value;
+      if (item.status === 'fulfilled') return item.value.message;
 
       const error = String(item.reason?.message ?? item.reason);
       const toolCall = toolCalls[index];
@@ -206,6 +197,15 @@ async function executeToolCalls({
       };
     }),
   );
+  // 必须先补齐本批全部 tool 返回，再插入承载图片的 user 消息。
+  for (const item of results) {
+    if (item.status !== 'fulfilled' || !item.value.observation) continue;
+    const observation = item.value.observation;
+    context.push({ ...imageObservationMessage(observation, assistantSessionId), _toolTurnId: toolTurnId, _observation: observation });
+  }
+  if (results.some((item) => item.status === 'fulfilled' && item.value.observation)) {
+    await toolContext.persistImageContext?.(collectImageContext(context, assistantSessionId));
+  }
 }
 
 async function runChat({
@@ -213,7 +213,6 @@ async function runChat({
   onEvent,
   context,
   projectDirPath,
-  imageUrls,
   prompt,
   tracker,
   signal,
@@ -223,20 +222,16 @@ async function runChat({
   assistantSessionId,
   toolContext,
   modelConfig,
+  step = 0,
 }) {
   throwIfAborted(signal);
-  const visionResult = await analyzeImages(
-    imageUrls,
-    prompt,
-    userMessage,
-    onEvent,
-    tracker,
-    signal,
-  );
-  if (appendUserMessage && (userMessage || prompt)) {
+  if (step >= 40) throw new Error('本轮工具执行次数已达上限，请继续发送消息');
+  if (appendUserMessage && (userMessage || prompt || toolContext.initialImages.length)) {
     context.push({
       role: 'user',
-      content: buildUserContent(visionResult, userMessage, prompt),
+      content: userMessage || prompt || '请查看上传的图片',
+      _images: toolContext.initialImages,
+      _imageInput: true,
       _sessionId: userSessionId,
     });
   }
@@ -247,7 +242,7 @@ async function runChat({
     signal,
     onEvent,
     modelConfig,
-    toolContext.webSearchEnabled,
+    toolContext,
   );
   if (toolCalls.length > 0) {
     await executeToolCalls({
@@ -259,6 +254,8 @@ async function runChat({
       projectDirPath,
       assistantSessionId,
       toolContext,
+      tracker,
+      modelConfig,
       onEvent,
       signal,
     });
@@ -267,7 +264,6 @@ async function runChat({
       onEvent,
       context,
       projectDirPath,
-      imageUrls: [],
       prompt,
       tracker,
       signal,
@@ -277,9 +273,10 @@ async function runChat({
       assistantSessionId,
       toolContext,
       modelConfig,
+      step: step + 1,
     });
   } else if (assistantText) {
-    context.push({ role: 'assistant', content: assistantText, _sessionId: assistantSessionId });
+    context.push({ role: 'assistant', content: assistantText, reasoning_content: reasoningContent, _sessionId: assistantSessionId });
   }
 }
 
@@ -307,6 +304,7 @@ function buildUsageResult(tracker, context, modelConfig) {
     ...tracker,
     totalTokens: tracker.promptTokens + tracker.completionTokens,
     contextLimit: modelConfig.contextLimit || CONTEXT_LIMIT_TOKENS,
+    contextEstimated: context.some((item) => item._images?.length > 0),
   };
   delete result.assistantText;
   return result;
@@ -322,18 +320,20 @@ export async function chat(
   options = {},
 ) {
   const webSearchEnabled = options.webSearchEnabled === true;
-  if (context[0]?.role === 'system') context[0].content = buildSystemPrompt(projectDirPath, webSearchEnabled);
   const modelConfig = options.modelConfig;
   modelRequestOptions(modelConfig);
+  if (context[0]?.role === 'system') context[0].content = buildSystemPrompt(projectDirPath, webSearchEnabled, modelConfig.supportsVision);
   const tracker = createUsageTracker(context);
   const toolTurnId = Symbol('tool-turn');
+  const initialImages = options.images ?? uploadedImages(imageUrls, options.toolContext?.storageKey);
+  const images = createImageRuntime(context, projectDirPath, { storageKey: options.toolContext?.storageKey, signal: options.signal });
+  images.register(initialImages);
   try {
     await runChat({
       userMessage,
       onEvent,
       context,
       projectDirPath,
-      imageUrls,
       prompt,
       tracker,
       signal: options.signal,
@@ -341,7 +341,7 @@ export async function chat(
       appendUserMessage: true,
       userSessionId: options.userSessionId,
       assistantSessionId: options.assistantSessionId,
-      toolContext: { ...options.toolContext, webSearchEnabled },
+      toolContext: { ...options.toolContext, webSearchEnabled, images, initialImages },
       modelConfig,
     });
     return buildUsageResult(tracker, context, modelConfig);

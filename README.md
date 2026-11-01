@@ -116,6 +116,12 @@ QQ / 微信回调地址和回跳域名需要与部署域名、第三方平台登
 
 环境变量通过终端或进程管理器注入。服务不会自动读取 `.env`；若采用该文件，可使用 `node --env-file=.env node/index.js` 启动。
 
+### 图像理解与看图工具
+
+模型列表的 `input_modalities` 包含 `image` 时，用户图片直接交给主模型；对话中途调用 `view_image({ imageIds?, paths?, question, detail? })` 读取图片，先返回工具加载状态，再附图继续原有对话循环。不包含 `image` 时，同一工具调用外接视觉服务并返回分析文字。
+
+前端展示独立识图图标、原生加载状态或外接分析正文。附件引用与观察保存在 `sessions.image_context`，上线前执行 `pnpm db:migrate:vision`。外接服务沿用 `imageBaseURL` / `imageKey`，可设置 `VISION_MODEL`（默认 `qwen3.7-plus`）、`VISION_MAX_TOKENS`（默认 1024）和 `VISION_THINKING=true`（默认关闭）。实现与测试说明见 [图像理解文档](docs/vision-routing-design.md)。
+
 ### 网页搜索与读取工具
 
 `node/openai/tools/web-tools.js` 通过 Function Calling 提供两个工具，已注册到现有聊天工具循环，沿用工具过程的 SSE 事件与历史持久化：

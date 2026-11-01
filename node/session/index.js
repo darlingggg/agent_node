@@ -10,6 +10,7 @@ export {
   createSession,
   createStreamingAssistantSession,
   createUserChatSession,
+  saveSessionImageContext,
   deleteSession,
   getSessionDetail,
   getSessionList,
