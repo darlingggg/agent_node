@@ -19,6 +19,7 @@ test('模型元数据保留能力，默认强度及用户选择从服务商配�
     model: 'model-a',
     reasoningEffort: 'high',
     contextLimit: 8192,
+    supportsVision: false,
   });
   assert.equal(resolveModelConfig(row, 'max').reasoningEffort, 'max');
   assert.throws(() => resolveModelConfig(row, 'medium'), /不支持/);

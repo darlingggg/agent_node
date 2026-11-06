@@ -12,7 +12,7 @@ import { modelRequestOptions } from '../../models/config.js';
 function findCompressionCutoff(context) {
   const userIndexes = [];
   for (let index = 1; index < context.length; index += 1) {
-    if (context[index].role === 'user') userIndexes.push(index);
+    if (context[index].role === 'user' && context[index]._origin !== 'tool_attachment') userIndexes.push(index);
   }
   if (userIndexes.length <= RECENT_USER_TURNS_TO_KEEP) return -1;
   return userIndexes[userIndexes.length - RECENT_USER_TURNS_TO_KEEP];
@@ -35,16 +35,18 @@ export async function compressContext(context, tracker, signal, onEvent, modelCo
       Math.max(max, Number(item._summarizedUntilSessionId) || Number(item._sessionId) || 0),
     0,
   );
-  const summaryInput = oldMessages.map(({ role, content, tool_calls }) => ({
+  const images = [...new Map(oldMessages.flatMap((item) => item._images || []).map((image) => [image.imageId, image])).values()];
+  const summaryInput = oldMessages.map(({ role, content, tool_calls, _images }) => ({
     role,
-    content,
+    content: Array.isArray(content) ? content.map((part) => part.type === 'text' ? part.text : '[图片内容省略，细节须重新读取]').join('\n') : content,
     tool_calls,
+    images: _images?.map(({ imageId, path }) => ({ imageId, path })),
   }));
   const promptMessages = [
     { role: 'system', content: '你负责压缩编程会话上下文，只输出结构化、事实准确的摘要。' },
     {
       role: 'user',
-      content: `请将以下历史对话压缩成一份可供后续编程助手继续工作的中文摘要。必须保留：用户目标、已确认决策、已修改文件、关键代码/API、工具执行结果、未完成事项和约束。不要添加原对话中不存在的信息。\n\n${JSON.stringify(summaryInput)}`,
+      content: `请将以下历史对话压缩成一份可供后续编程助手继续工作的中文摘要。必须保留：用户目标、已确认决策、已修改文件、关键代码/API、工具执行结果、未完成事项和约束。保留参考图片 ID 和已得到的视觉结论；没有文字证据的细节标记需要重新 view_image，不得编造。不要添加原对话中不存在的信息。\n\n${JSON.stringify(summaryInput)}`,
     },
   ];
 
@@ -92,6 +94,7 @@ export async function compressContext(context, tracker, signal, onEvent, modelCo
     role: 'system',
     content: `【历史对话压缩摘要】\n${summary}`,
     _isSummary: true,
+    _images: images,
     _summarizedUntilSessionId: summarizedUntilSessionId || null,
   });
   tracker.compressed = true;

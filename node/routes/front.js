@@ -9,6 +9,7 @@ import chatRouter from './front/chat.js';
 import imageGenerationRouter from './front/image-generation.js';
 import activityRouter from './front/activity.js';
 import deploymentRouter from './front/deployment.js';
+import previewRouter from './front/preview.js';
 
 const router = express.Router();
 
@@ -23,6 +24,7 @@ router.use(
   imageGenerationRouter,
   activityRouter,
   deploymentRouter,
+  previewRouter,
 );
 
 export default router;

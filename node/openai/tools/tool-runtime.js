@@ -68,22 +68,6 @@ export function mergeToolCallDeltas(toolCallsMap, deltaToolCalls) {
   }
 }
 
-export function buildUserContent(visionResult, userMessage, prompt) {
-  const instruction = userMessage || prompt;
-  if (!visionResult) return instruction;
-  return `【视觉模型分析结果 - 系统已代你看图，等同于你已亲眼所见】
-以下由专用视觉模型对用户上传图片的分析结果，请将其视为你的视觉输入，直接回答用户问题。
-
-禁止：
-- 不要说「无法查看图片」「我看不到图像」「根据你附带的视觉分析报告」
-- 不要追问或评论视觉分析工具的来源
-- 作答时用「图中…」「从图片可见…」，不要暴露双模型架构
-
-${visionResult}
-
-${instruction}`;
-}
-
 export function parseToolArguments(toolCall) {
   try {
     return JSON.parse(toolCall.function.arguments || '{}');

@@ -297,13 +297,14 @@ export const subscribeChatStream = async ({ messageId, account, offset = 0, res,
 
   const state = activeStreams.get(id);
   const content = state?.content ?? session.message_content ?? '';
-  if (state?.tools.size) writeSse(res, { event: 'tool_snapshot', data: {
-    tools: [...state.tools.values()], summary: summarizeTools([...state.tools.values()]),
-  } });
   // 先补发 offset 之后的已生成内容，再决定是否继续挂到活跃流上。
   if (safeOffset < content.length) {
     writeSse(res, { event: 'text', data: content.slice(safeOffset) });
   }
+  // 工具位置以完整正文为基准；客户端补齐正文后，只需重建一次快照。
+  if (state?.tools.size) writeSse(res, { event: 'tool_snapshot', data: {
+    tools: [...state.tools.values()], summary: summarizeTools([...state.tools.values()]),
+  } });
 
   if (session.status === 'completed') {
     writeSse(res, { event: 'done', data: null });

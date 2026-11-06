@@ -36,11 +36,11 @@ export async function createSession(body, user) {
 }
 
 export async function createUserChatSession(
-  { title, projectId, content, conversationId, model, reasoningEffort },
+  { title, projectId, content, conversationId, model, reasoningEffort, images = [] },
   user,
 ) {
   const [result] = await connection.query(
-    'insert into sessions (title, role, project_id, content, account, status, conversation_id, model, reasoning_effort) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+    'insert into sessions (title, role, project_id, content, account, status, conversation_id, model, reasoning_effort, image_context) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
     [
       title || content.slice(0, 30),
       'user',
@@ -51,9 +51,15 @@ export async function createUserChatSession(
       conversationId,
       model,
       reasoningEffort,
+      JSON.stringify({ images, observations: [] }),
     ],
   );
   return { id: result.insertId };
+}
+
+export async function saveSessionImageContext(sessionId, imageContext, user) {
+  await connection.query('UPDATE sessions SET image_context = ? WHERE id = ? AND account = ?',
+    [JSON.stringify(imageContext), sessionId, user.account]);
 }
 
 export async function createStreamingAssistantSession(

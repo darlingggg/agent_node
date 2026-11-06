@@ -61,6 +61,7 @@ export function resolveModelConfig(model, requestedEffort) {
   return {
     model: model.model_key,
     reasoningEffort,
+    supportsVision: Array.isArray(capabilities.input_modalities) && capabilities.input_modalities.includes('image'),
     ...(Number.isSafeInteger(contextLimit) && contextLimit >= 4096 ? { contextLimit } : {}),
   };
 }

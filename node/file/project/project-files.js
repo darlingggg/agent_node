@@ -23,6 +23,8 @@ const IGNORED_DIRS = new Set([
   '__screenshots__',
   '.vscode',
   'versions',
+  '.agent-build',
+  '.agent-build-logs',
 ]);
 const IGNORED_FILES = new Set([
   '.DS_Store',
